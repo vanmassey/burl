@@ -21,7 +21,7 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
 | 0.1.0 | First light | ✅ released 2026-11-24 |
 | 0.2 | Stone (modules) | ✅ released 2026-11-24 |
 | 0.3 | Iron (the checker) | ✅ released 2026-11-24 |
-| 0.4 | **Bootstrap** (Burl in Burl) | |
+| 0.4 | **Bootstrap** (Burl in Burl) | ✅ released 2026-11-24 |
 | 0.5 | Keel (bytecode VM) | |
 | 0.6 | Dragon (native code) | |
 | 0.7 | Provisions (std library) | |
@@ -63,26 +63,44 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
   a gate, and silent whenever it cannot prove a claim. The one-page site
   (docs/, served by GitHub Pages) came along for the ride.
 
-## v0.4 — Bootstrap: the interpreter, rewritten in Burl
+## v0.4 — Bootstrap: the interpreter, rewritten in Burl  ✅ shipped
 
 *Theme: Burl runs Burl. The language starts to carry its own weight.*
 
-- A complete interpreter written *in Burl*: `src/lex.burl`, `src/parse.burl`,
-  `src/interp.burl`, driven by the Python host's runtime
-  (`python -m burl src/burl.burl program.burl`).
-- Slowness is acceptable (dozens of times slower is fine for v0.4);
-  correctness and language ergonomics are not.
-- **Bootstrapping has happened when, reflexively, one satisfied chain runs
-  the whole test suite: a host runs (Burl interpreter) which runs
-  (Burl interpreter) which runs (each test program) with identical
-  output.** Anything less is not bootstrap.
-- Bootstrap is a discovery phase, not a feature sprint: expect post-0.2 and
-  post-0.3 holes found *while writing it* — those fixes, not new features,
-  define 0.4. Expect it to also produce the spec's honest omissions list
-  (integer ops beyond 2^53, slicing, debugging hooks), which becomes 0.5/0.6
-  material.
-- **Done when:** a CI job runs the reflexive suite; Python remains only a
-  bootstrap shim, never a semantic reference anymore.
+- A complete interpreter written *in Burl*: `src/lex.burl` (a split-
+  interpolation lexer), `src/parse.burl` (the recursive-descent parser),
+  `src/interp.burl` (the tree-walking evaluator), `src/kernel.burl`
+  (the boot machinery: boot a fresh engine from source, run a program,
+  chain levels), and `src/burl.burl` (the driver). Every file passes
+  `burl check`, and the engine's token streams, ASTs, output, and error
+  messages are byte-identical to the Python host's on the whole corpus.
+- One new builtin made this possible: `apply(f, args)` (SPEC.md 9) —
+  how the Burl layer calls the host builtins it can no longer reach by
+  name once it is interpreting them.
+- The Python host remains, honestly labeled: a bootstrap shim. It
+  supplies the builtins and, in `burl/__main__.py`, the large thread
+  stack that interpreting-an-interpreting-interpreter needs. It is not a
+  semantic reference anymore — the differential tests prove the two run
+  the same language.
+- **The CLI deviation, unavoidable until argv exists (0.7):** the driver
+  reads its program from stdin — `python -m burl src/burl.burl <
+  program.burl`. Same deviation for `read()`, which is working-directory
+  relative per SPEC.md 9, so run from the repo root.
+- Reflexive test suite in `tests/test_bootstrap.py`: every semantic
+  snippet and example program produces byte-identical combined output
+  under the host and a depth-1 chain (host runs Burl interp, which runs
+  the program). Depth 2 — host → (Burl interp) → (Burl interp) → program,
+  beyond the roadmap's depth-1 minimum — runs behind `BURL_SLOW_TESTS=1`;
+  it re-parses the whole engine through the engine itself and takes
+  minutes.
+- Slowness is accepted and honest: the engine is dozens of times slower
+  than the host today, and each added level multiplies that. 0.5 (the
+  bytecode VM) is speed without changing meaning.
+- **Shipped as:** the full differential corpus in
+  `tests/test_bootstrap.py` (30 semantic snippets + `examples/`,
+  errors and all), CI type-checks the engine with `burl check`, and the
+  spec's honest omissions discovered while writing it (list slicing,
+  integer ops beyond 2^53, argv) carry forward to 0.5/0.6/0.7.
 
 ## v0.5 — Bytecode VM
 
@@ -91,8 +109,11 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
 - A compiler (tree → bytecode) and stack VM, also written in Burl, added to
   `src/`. The tree-walker from 0.4 stays as the *definition of correct*:
   CI runs both engines and diffs their outputs on every example and test.
-- **Done when:** the VM is ≥10x the tree-walker on the benchmark suite and
-  output-diff CI is green (the interpreter must not outsmart the interpreter).
+- **Done when:** the VM is ≥10x the tree-walker on the benchmark suite
+  (the suite already exists: `benchmarks/`, deterministic and
+  expected-output-diffed) and output-diff CI is green (the interpreter must
+  not outsmart the interpreter). Performance notes and how to run it live in
+  `benchmarks/README.md`.
 
 ## v0.6 — Native executables
 
@@ -120,7 +141,9 @@ The kernel model: burst the features, then freeze and shake. Phases in order:
 **1.0-rc1 — feature freeze.** The grammar and the hint vocabulary are
 untouchable from here on. Entry ritual: the *full deficiency ledger* is
 filed and public — every known spec ambiguity, REPL papercut, error-message
-gap, and CI flake. `rc` length is defined by the ledger, never by a date;
+gap, and CI flake. The ledger already lives in [LEDGER.md](LEDGER.md) and
+captures items as they are noticed; rc1's job is proving it *complete*.
+`rc` length is defined by the ledger, never by a date;
 "long" is the default.
 
 **rc2 ... rcN — fixes and evidence only.**

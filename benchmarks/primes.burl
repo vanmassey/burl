@@ -1,0 +1,29 @@
+// Benchmark: arithmetic, conditionals, nested loops.
+// Count primes below LIMIT by trial division (no sqrt: d*d <= candidate).
+
+let count = 0
+const limit = 2000
+
+for candidate in range(2, limit) {
+    let d = 2
+    let is_prime = true
+    while d * d <= candidate {
+        if candidate % d == 0 {
+            is_prime = false
+            break
+        }
+        d = d + 1
+    }
+    if is_prime {
+        count = count + 1
+    }
+}
+
+// And some burner arithmetic the compiler can never fold away.
+let burner = 1
+for i in range(4000) {
+    burner = (burner * 48271) % 2147483647
+}
+
+print("primes: {count}")
+print("burner: {burner}")

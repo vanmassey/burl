@@ -1,0 +1,121 @@
+// ============================================================================
+// kernel.burl — The bootstrap kernel: stateless, parameter-only.
+//
+// Every function here receives its entire machinery as a `deps` map:
+//
+//   deps = {
+//     "lex":         fn(source) -> token maps or nil on failure
+//     "parse":       fn(toks, lex) -> AST or nil on failure
+//     "make_globals":fn() -> a fresh globals environment
+//     "exec_ast":    fn(ast, env) -> nil; sets an error on failure
+//     "call_fn":     fn(fnv, args, line) -> calls a closure THIS machinery built
+//     "lex_err":     fn() -> {"kind","msg","line"}   (lex module's state)
+//     "parse_err":   fn() -> same (parse module's state)
+//     "interp_err":  fn() -> same (interp module's state)
+//   }
+//
+// "call_fn" is the load-bearing detail: closures built by level N's exec are
+// opaque to the host, but always runnable by the machinery that made them.
+// Every step UP the chain goes through deps["call_fn"], not direct calls.
+//
+// boot(deps, sources) exec's the engine sources into a fresh environment
+// whose parent is deps' globals: the closures that come out ARE the next
+// level's machinery. chain() boots `depth` levels, then runs the program
+// on the innermost machinery. That is bootstrapping: the machine that runs
+// the program is the program itself, built one layer at a time.
+//
+// This file exec's cleanly in ANY env — it references nothing but `deps`.
+// ============================================================================
+
+// Read a name out of a bootstrap env ({"v": {name: {"val",...}}}).
+fn k_env_get(env, name) {
+    return env["v"][name]["val"]
+}
+
+// Build a deps map from a bootstrapped environment.
+fn k_deps_of(env) {
+    return {
+        "lex": k_env_get(env, "lex"),
+        "parse": k_env_get(env, "parse"),
+        "make_globals": k_env_get(env, "i_make_globals"),
+        "exec_ast": k_env_get(env, "i_boot_exec"),
+        "call_fn": k_env_get(env, "i_call_fn"),
+        "lex_err": k_env_get(env, "lex_err"),
+        "parse_err": k_env_get(env, "parse_err"),
+        "interp_err": k_env_get(env, "interp_err"),
+    }
+}
+
+const K_NO_ERR = {"kind": "", "msg": "", "line": 0}
+
+// Lex + parse + exec one engine source into `env`.
+// Returns [true, env] on success, [false, errmap] on failure.
+fn k_boot_stage(deps, src, env) {
+    let toks = deps["lex"](src)
+    let le = deps["lex_err"]()
+    if le["kind"] != "" {
+        return [false, le]
+    }
+    let ast = deps["parse"](toks, deps["lex"])
+    let pe = deps["parse_err"]()
+    if pe["kind"] != "" {
+        return [false, pe]
+    }
+    deps["exec_ast"](ast, env)
+    let ie = deps["interp_err"]()
+    if ie["kind"] != "" {
+        return [false, ie]
+    }
+    return [true, env]
+}
+
+// Exec all engine sources into a fresh env. Returns [true, env] or [false, err].
+fn k_boot(deps, sources) {
+    let env = {"v": {}, "p": deps["make_globals"]()}
+    for src in sources {
+        let r = k_boot_stage(deps, src, env)
+        if not r[0] {
+            return r
+        }
+    }
+    return [true, env]
+}
+
+// Run a user program through one level of machinery.
+// Returns the error map ({"kind": ""} when the program ran clean).
+fn k_run_program(deps, program) {
+    let toks = deps["lex"](program)
+    let le = deps["lex_err"]()
+    if le["kind"] != "" {
+        return le
+    }
+    let ast = deps["parse"](toks, deps["lex"])
+    let pe = deps["parse_err"]()
+    if pe["kind"] != "" {
+        return pe
+    }
+    let genv = deps["make_globals"]()
+    deps["exec_ast"](ast, genv)
+    let ie = deps["interp_err"]()
+    if ie["kind"] != "" {
+        return ie
+    }
+    return K_NO_ERR
+}
+
+// The reflexive chain: boot `depth` levels of machinery, then run the
+// program on the innermost one. depth 0 = run on the passed deps directly.
+// Each step up calls the NEXT level's chain through deps["call_fn"]: the
+// machinery that built those closures is the only thing that can run them.
+fn k_chain(deps, sources, program, depth) {
+    if depth == 0 {
+        return k_run_program(deps, program)
+    }
+    let r = k_boot(deps, sources)
+    if not r[0] {
+        return r[1]
+    }
+    let fresh = k_deps_of(r[1])
+    let next_chain = k_env_get(r[1], "k_chain")
+    return deps["call_fn"](next_chain, [fresh, sources, program, depth - 1], 0)
+}

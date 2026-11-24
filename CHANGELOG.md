@@ -7,6 +7,51 @@ without a two-major-version deprecation.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-11-24
+
+### Added
+
+- **Bootstrap** (ROADMAP v0.4 "Bootstrap"): the Burl interpreter,
+  rewritten in Burl. `src/lex.burl`, `src/parse.burl`, `src/interp.burl`,
+  `src/kernel.burl` (boot, run, and level-chaining machinery), and
+  `src/burl.burl` (the driver). All five pass `burl check`. The engine's
+  tokens, ASTs, output, and error messages are byte-identical to the
+  Python host's across the whole corpus — 30 semantic snippets plus the
+  example programs, errors included — verified differentially in
+  `tests/test_bootstrap.py`.
+- `apply(f, args)` builtin (SPEC.md 9): calls any function value with a
+  list of arguments. How the Burl engine, which cannot reach the host
+  builtins by name while interpreting, still calls them. Under the
+  bootstrapped engine, `apply` is the engine's own wrapper — it also
+  accepts Burl-defined functions, which the host builtin cannot run —
+  and host functions fall through to the host builtin. Two divergences
+  found while wiring the corpus are filed as LEDGER.md L-010/L-011
+  (error lines of builtin-internal errors under the engine; the `type`
+  of an engine-defined function), both 0.5 material.
+- The Python host now runs bootstrap-scale programs on a dedicated
+  large-stack thread (`burl/__main__.py`); interpreting an interpreter
+  multiplies Python call depth. Python-side shim only — the language is
+  unchanged.
+
+### Changed
+
+- New entry point: `python -m burl src/burl.burl < program.burl` runs a
+  program through the reflexive chain
+  host → (Burl interp) → (Burl interp) → program. The driver reads its
+  program from stdin because argv is still 0.7 material; `read()` stays
+  working-directory relative (SPEC.md 9), so run from the repo root.
+- Depth 2 exceeds the roadmap's depth-1 definition of bootstrap. It
+  re-parses the entire engine through the engine (expected: minutes per
+  run), so the default test suite proves depth 1 end to end and the
+  depth-2 chain plus driver run only with `BURL_SLOW_TESTS=1`.
+
+### Performance
+
+- Stated honestly: the Burl engine is dozens of times slower than the
+  Python host, and each chained level multiplies the cost. Correctness
+  and identical behavior were the 0.4 bar; speed is the bytecode VM's
+  (0.5) without changing meaning.
+
 ## [0.3.0] - 2026-11-24
 
 ### Added

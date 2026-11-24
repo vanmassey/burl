@@ -85,6 +85,40 @@ class Env:
 # The interpreter
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Host-side function call (used by apply(), the bootstrap bridge)
+# --------------------------------------------------------------------------
+
+def _host_call_function(fn, args, line):
+    """Call a BurlFunction from Python — the apply() builtin's engine."""
+    if len(args) != len(fn.params):
+        raise BurlRuntimeError(
+            f"Function '{fn.name}' expects {len(fn.params)} argument(s), got {len(args)}",
+            line)
+    call_env = Env(fn.env)
+    for (name, hint), value in zip(fn.params, args):
+        call_env.define(name, value, line, hint=hint)
+    interp = _interp_for_host
+    if interp is None:
+        interp = Interpreter()
+    try:
+        interp.exec_stmts(fn.body.stmts, Env(call_env))
+        value = None
+    except _ReturnSignal as ret:
+        value = ret.value
+    check_hint(value, fn.ret_hint, f"return of '{fn.name}'", line)
+    return value
+
+
+# The default interpreter used when Burl code calls apply() on a user fn.
+_interp_for_host = None
+
+
+def set_host_interpreter(interp):
+    global _interp_for_host
+    _interp_for_host = interp
+
+
 class Interpreter:
     def __init__(self, builtins_env=None):
         from .builtins import global_env  # local import avoids a cycle
@@ -111,6 +145,9 @@ class Interpreter:
             Call: self.eval_call, Index: self.eval_index, Member: self.eval_member,
             FnExpr: self.eval_fn_expr,
         }
+        # apply() on a user fn runs through the most recently created
+        # interpreter — in practice the one executing the calling code.
+        set_host_interpreter(self)
 
     # ---- entry points ------------------------------------------------------
 

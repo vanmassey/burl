@@ -1,0 +1,48 @@
+// Benchmark: list operations, comparisons, heavier recursion.
+// Quicksort over a deterministic pseudo-random list (minstd LCG — the
+// multiplier keeps every intermediate value inside 2^53).
+
+fn concat(a, b, c) {
+    let out = []
+    for x in a { push(out, x) }
+    for x in b { push(out, x) }
+    for x in c { push(out, x) }
+    return out
+}
+
+fn quicksort(items) {
+    if len(items) <= 1 {
+        return items
+    }
+    const pivot = items[int(len(items) / 2)]
+    let less = []
+    let equal = []
+    let greater = []
+    for x in items {
+        if x < pivot {
+            push(less, x)
+        } else if x == pivot {
+            push(equal, x)
+        } else {
+            push(greater, x)
+        }
+    }
+    return concat(quicksort(less), equal, quicksort(greater))
+}
+
+let seed = 42
+let items = []
+for i in range(1200) {
+    push(items, seed)
+    seed = (seed * 48271) % 2147483647
+}
+
+let sorted = quicksort(items)
+
+let checksum = 0
+for i in range(len(sorted)) {
+    checksum = (checksum + sorted[i] * (i + 1)) % 2147483647
+}
+
+print("first: {sorted[0]}  last: {sorted[len(sorted) - 1]}")
+print("checksum: {checksum}")

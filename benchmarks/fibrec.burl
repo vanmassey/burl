@@ -1,0 +1,16 @@
+// Benchmark: recursion and function-call overhead.
+// Recursive Fibonacci — the classic interpreter load: many modest calls.
+
+fn fib(n) {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+let total = 0
+for i in range(4) {
+    total = total + fib(19 + (i % 2))
+}
+
+print("checksum: {total}")

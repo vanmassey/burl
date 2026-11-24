@@ -67,6 +67,7 @@ _BUILTIN_TYPES = {
     "read":     ("string", (("string",),)),
     "write":    (None, (("string",), ("string",))),
     "clock":    ("number", ()),
+    "apply":    (None, (("fn",), ("list",))),
 }
 
 

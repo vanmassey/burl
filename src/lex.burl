@@ -1,0 +1,315 @@
+// ---------------------------------------------------------------------------
+// Burl's lexer, written in Burl. (0.4 Bootstrap, ROADMAP.md)
+//
+// source -> token list. Every token is a map:
+//   {"kind": "NUM" | "STR" | "ID" | "NL" | "EOF" | operator, "value": ..., "line": n}
+// A STR token's value is a list of parts:
+//   {"k": "lit",  "t": text}                      literal text
+//   {"k": "expr", "t": source, "lh": start line}  one {expr} interpolation
+//
+// Burl has no exceptions: all failures set the shared ERR state in this
+// bootstrap env (see _E below) and return. Callers check lex_err().
+// ---------------------------------------------------------------------------
+
+let _E = {"kind": "", "msg": "", "line": 0}
+
+fn lex_err() {
+    return _E
+}
+
+fn lex_fail(kind, msg, line) {
+    _E["kind"] = kind
+    _E["msg"] = msg
+    _E["line"] = line
+    return nil
+}
+
+fn lex_fresh() {
+    _E["kind"] = ""
+    _E["msg"] = ""
+    _E["line"] = 0
+    return nil
+}
+
+// ---- character classes (Burl has neither regex nor chr(); table it) -------
+
+let DIGITS = "0123456789"
+let UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+let LOWER = "abcdefghijklmnopqrstuvwxyz"
+let ALPHA = UPPER + LOWER + "_"
+
+fn lex_is_digit(ch) {
+    return ch != "" and contains(DIGITS, ch)
+}
+
+fn lex_is_alpha(ch) {
+    return ch != "" and contains(ALPHA, ch)
+}
+
+fn lex_is_alnum(ch) {
+    return ch != "" and (contains(ALPHA, ch) or contains(DIGITS, ch))
+}
+
+let KEYWORDS = ["and", "or", "not", "let", "const", "fn", "if", "else",
+                "while", "for", "in", "return", "break", "continue",
+                "true", "false", "nil"]
+
+let SINGLE_OPS = "+-*/%=<>()[\{\}],.:"
+let TWO_CHAR_OPS = ["==", "!=", "<=", ">="]
+let ESCAPE_CHARS = "ntr\\\"\{\}"
+// The value each escape turns into. The first three are written via their
+// real characters below so the table reads as what it produces.
+let ESCAPE_VALUES = ["\n", "\t", "\r", "\\", "\"", "\{", "\}"]
+
+// ---- the scanner state ------------------------------------------------------
+// Burl closures capture their environment, so one program-level `let` per
+// field keeps this readable: _SRC, _POS, _LINE, _DEPTH.
+
+let _SRC = ""
+let _POS = 0
+let _LINE = 1
+let _DEPTH = 0
+
+fn lex_at_end() {
+    return _POS >= len(_SRC)
+}
+
+fn lex_peek() {
+    if _POS < len(_SRC) {
+        return _SRC[_POS]
+    }
+    return ""
+}
+
+fn lex_peek2() {
+    if _POS + 1 < len(_SRC) {
+        return _SRC[_POS + 1]
+    }
+    return ""
+}
+
+fn lex_advance() {
+    let ch = _SRC[_POS]
+    _POS = _POS + 1
+    if ch == "\n" {
+        _LINE = _LINE + 1
+    }
+    return ch
+}
+
+fn lex_token(kind, value, line) {
+    return {"kind": kind, "value": value, "line": line}
+}
+
+// ---- main loop --------------------------------------------------------------
+
+fn lex(source) {
+    _E = {"kind": "", "msg": "", "line": 0}
+    _SRC = source
+    _POS = 0
+    _LINE = 1
+    _DEPTH = 0
+    let out = []
+    while not lex_at_end() {
+        let ch = lex_peek()
+        if ch == "\n" {
+            lex_advance()
+            if _DEPTH == 0 and len(out) > 0 and out[len(out) - 1]["kind"] != "NL" {
+                push(out, lex_token("NL", nil, _LINE))
+            }
+        } else if ch == " " or ch == "\t" or ch == "\r" {
+            lex_advance()
+        } else if ch == "/" and lex_peek2() == "/" {
+            // comment to end of line (the newline itself is handled above)
+            _POS = find(_SRC, "\n", _POS)
+            if _POS == -1 {
+                _POS = len(_SRC)
+            }
+        } else if ch == "\"" {
+            push(out, lex_string())
+            if not lex_ok() {
+                return nil
+            }
+        } else if lex_is_digit(ch) {
+            push(out, lex_number())
+            if not lex_ok() {
+                return nil
+            }
+        } else if lex_is_alpha(ch) {
+            push(out, lex_ident())
+        } else {
+            push(out, lex_operator())
+            if not lex_ok() {
+                return nil
+            }
+        }
+    }
+    push(out, lex_token("EOF", nil, _LINE))
+    return out
+}
+
+fn lex_ok() {
+    return _E["kind"] == ""
+}
+
+// ---- token scanners ----------------------------------------------------------
+
+fn lex_operator() {
+    let line = _LINE
+    let two = lex_peek() + lex_peek2()
+    for op in TWO_CHAR_OPS {
+        if two == op {
+            lex_advance()
+            lex_advance()
+            return lex_token(op, nil, line)
+        }
+    }
+    let ch = lex_peek()
+    if contains(SINGLE_OPS, ch) {
+        lex_advance()
+        if ch == "(" or ch == "[" {
+            _DEPTH = _DEPTH + 1
+        } else if ch == ")" or ch == "]" {
+            if _DEPTH > 0 {
+                _DEPTH = _DEPTH - 1
+            }
+        }
+        return lex_token(ch, nil, line)
+    }
+    return lex_fail("lex", "Unexpected character " + str(ch), line)
+}
+
+fn lex_number() {
+    let line = _LINE
+    let start = _POS
+    while lex_is_digit(lex_peek()) {
+        lex_advance()
+    }
+    let is_float = false
+    if lex_peek() == "." and lex_is_digit(lex_peek2()) {
+        is_float = true
+        lex_advance()
+        while lex_is_digit(lex_peek()) {
+            lex_advance()
+        }
+    }
+    let text = slice(_SRC, start, _POS)
+    if text[len(text) - 1] == "." {
+        return lex_fail("lex", "Malformed number " + str(text) + " (expected digits after '.')", line)
+    }
+    return lex_token("NUM", num(text), line)
+}
+
+fn lex_ident() {
+    let line = _LINE
+    let start = _POS
+    while lex_is_alnum(lex_peek()) {
+        lex_advance()
+    }
+    let word = slice(_SRC, start, _POS)
+    let kind = "ID"
+    for kw in KEYWORDS {
+        if word == kw {
+            kind = kw
+        }
+    }
+    return lex_token(kind, word, line)
+}
+
+// ---- strings and interpolation (SPEC.md 7) -----------------------------------
+
+fn lex_string() {
+    let line = _LINE
+    lex_advance()  // opening quote
+    let parts = []
+    let buf = ""
+    while true {
+        if lex_at_end() {
+            return lex_fail("lex", "Unterminated string (missing closing '\"')", line)
+        }
+        let ch = lex_peek()
+        if ch == "\"" {
+            lex_advance()
+            if len(buf) > 0 {
+                push(parts, {"k": "lit", "t": buf})
+            }
+            return lex_token("STR", parts, line)
+        }
+        if ch == "\n" {
+            return lex_fail("lex", "Unterminated string (newline before closing '\"')", line)
+        }
+        if ch == "\\" {
+            lex_advance()
+            let esc = lex_peek()
+            let at = find(ESCAPE_CHARS, esc)
+            if at == -1 {
+                return lex_fail("lex", "Unknown escape '\\" + esc + "' (valid: n t r \\ \" \{ \})", _LINE)
+            }
+            lex_advance()
+            buf = buf + ESCAPE_VALUES[at]
+        } else if ch == "\{" {
+            lex_advance()
+            if len(buf) > 0 {
+                push(parts, {"k": "lit", "t": buf})
+                buf = ""
+            }
+            push(parts, lex_interpolation(line))
+            if not lex_ok() {
+                return nil
+            }
+        } else if ch == "\}" {
+            return lex_fail("lex", "Unmatched close brace in string literal", _LINE)
+        } else {
+            lex_advance()
+            buf = buf + ch
+        }
+    }
+}
+
+fn lex_interpolation(start_line) {
+    // Scan a {...} inside a string; braces balance, quotes are skipped.
+    let depth = 1
+    let start = _POS
+    while true {
+        if lex_at_end() {
+            return lex_fail("lex", "Unterminated open brace in string interpolation", start_line)
+        }
+        let ch = lex_peek()
+        if ch == "\"" {
+            if not lex_skip_quoted() {
+                return nil
+            }
+        } else if ch == "\{" {
+            depth = depth + 1
+            lex_advance()
+        } else if ch == "\}" {
+            depth = depth - 1
+            lex_advance()
+            if depth == 0 {
+                return {"k": "expr", "t": trim(slice(_SRC, start, _POS - 1)), "lh": start_line}
+            }
+        } else {
+            lex_advance()
+        }
+    }
+}
+
+fn lex_skip_quoted() {
+    lex_advance()  // opening quote
+    while true {
+        if lex_at_end() {
+            lex_fail("lex", "Unterminated '\"' inside string interpolation", _LINE)
+            return false
+        }
+        let ch = lex_peek()
+        if ch == "\\" {
+            lex_advance()
+            lex_advance()
+        } else if ch == "\"" {
+            lex_advance()
+            return true
+        } else {
+            lex_advance()
+        }
+    }
+}

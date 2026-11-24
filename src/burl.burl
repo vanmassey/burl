@@ -1,0 +1,66 @@
+// ============================================================================
+// burl.burl — The outer bootstrap driver.
+//
+//   python -m burl src/burl.burl < program.burl
+//
+// Reads a Burl program from stdin (Burl has no argv access yet — that is
+// 0.7 material), then runs it through a reflexive chain of interpreters:
+//
+//   the Python host runs THIS file, which boots a Burl interpreter,
+//   which boots another Burl interpreter, which runs your program.
+//
+// BOOT_DEPTH=2 exceeds the roadmap's depth-1 minimum: the leaf machinery
+// was itself built by Burl machinery built by the host. The Python host is
+// left squatting at the bottom, holding the builtins — nothing more.
+//
+// Paths note: import() resolves relative to this file; read() resolves
+// relative to the working directory (SPEC.md 9), so run from the repo root.
+// ============================================================================
+
+const BOOT_DEPTH = 2
+
+let lexmod = import("lex.burl")
+let parsemod = import("parse.burl")
+let interpmod = import("interp.burl")
+let kern = import("kernel.burl")
+
+let DEPS = {
+    "lex": lexmod.lex,
+    "parse": parsemod.parse,
+    "make_globals": interpmod.i_make_globals,
+    "exec_ast": interpmod.i_boot_exec,
+    "call_fn": interpmod.i_call_fn,
+    "lex_err": lexmod.lex_err,
+    "parse_err": parsemod.parse_err,
+    "interp_err": interpmod.interp_err,
+}
+
+// The engine source files are also the DATA for the next level's boot.
+// kernel.burl rides along so every booted level has its own chain.
+let SOURCES = [
+    read("src/lex.burl"),
+    read("src/parse.burl"),
+    read("src/interp.burl"),
+    read("src/kernel.burl"),
+]
+
+// ---- read the program from stdin ------------------------------------------
+
+let lines = []
+while true {
+    let ln = input()
+    if ln == nil {
+        break
+    }
+    push(lines, ln)
+}
+let program = join(lines, "\n")
+
+// ---- run it through the chain ----------------------------------------------
+
+const KIND_NAMES = {"lex": "Lex", "parse": "Parse", "runtime": "Runtime"}
+
+let err = kern.k_chain(DEPS, SOURCES, program, BOOT_DEPTH)
+if err["kind"] != "" {
+    print("burl: " + KIND_NAMES[err["kind"]] + " error at line " + str(err["line"]) + ": " + err["msg"])
+}

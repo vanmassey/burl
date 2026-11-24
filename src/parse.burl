@@ -1,0 +1,708 @@
+// ============================================================================
+// parse.burl — The Burl parser, written in Burl.
+//
+// A direct port of burl/parser.py (recursive descent, precedence climbing).
+// Consumes the token maps produced by lex.burl ({"kind","value","line"})
+// and produces AST maps tagged with "tag", mirroring the Python dataclasses.
+//
+// Self-contained: its own error state, no references to other engine files.
+// All failures set _P_E and return nil; every caller checks parse_ok().
+// ============================================================================
+
+// ---- error state ------------------------------------------------------------
+
+let _P_E = {"kind": "", "msg": "", "line": 0}
+
+fn parse_err() {
+    return _P_E
+}
+
+fn parse_fail(kind, msg, line) {
+    _P_E = {"kind": kind, "msg": msg, "line": line}
+    return nil
+}
+
+fn parse_fresh() {
+    return {"kind": "", "msg": "", "line": 0}
+}
+
+fn parse_ok() {
+    return _P_E["kind"] == ""
+}
+
+// ---- parser state -----------------------------------------------------------
+
+let _PX_TOKS: list = []
+let _PX_POS = 0
+let _PX_LEX_BOX = [nil]   // holds the lexer function (box: checker-safe call)
+
+// ---- token helpers ----------------------------------------------------------
+
+fn p_peek() {
+    return _PX_TOKS[_PX_POS]
+}
+
+fn p_next() {
+    let tok = _PX_TOKS[_PX_POS]
+    _PX_POS = _PX_POS + 1
+    return tok
+}
+
+fn p_check(kind) {
+    return p_peek()["kind"] == kind
+}
+
+fn p_match(kind) {
+    if p_check(kind) {
+        p_next()
+        return true
+    }
+    return false
+}
+
+fn p_expect(kind, what) {
+    let tok = p_peek()
+    if tok["kind"] != kind {
+        let shown = "end of input"
+        if tok["kind"] != "EOF" {
+            shown = tok["kind"]
+        }
+        let wanted = what
+        if wanted == nil {
+            wanted = "'" + kind + "'"
+        }
+        return parse_fail("parse", "Expected " + wanted + ", got " + shown, tok["line"])
+    }
+    return p_next()
+}
+
+fn p_skip_nl() {
+    while p_check("NL") {
+        p_next()
+    }
+}
+
+fn p_has(items, want) {
+    for item in items {
+        if item == want {
+            return true
+        }
+    }
+    return false
+}
+
+// ---- program / statements ---------------------------------------------------
+
+fn parse(toks, lexfn) {
+    _P_E = parse_fresh()
+    _PX_LEX_BOX[0] = lexfn
+    _PX_TOKS = toks
+    _PX_POS = 0
+    let stmts = []
+    p_skip_nl()
+    let start_line = p_peek()["line"]
+    while not p_check("EOF") {
+        push(stmts, p_statement())
+        if not parse_ok() {
+            return nil
+        }
+        p_end_statement()
+        if not parse_ok() {
+            return nil
+        }
+        p_skip_nl()
+    }
+    return {"tag": "Program", "stmts": stmts, "line": start_line}
+}
+
+fn p_end_statement() {
+    // A statement must end at a newline, a right brace, or end of input.
+    let tok = p_peek()
+    let k = tok["kind"]
+    if k != "NL" and k != "\}" and k != "EOF" {
+        let shown = "end of input"
+        if k != "EOF" {
+            shown = "'" + k + "'"
+        }
+        return parse_fail("parse", "Expected end of statement, got " + shown, tok["line"])
+    }
+    return nil
+}
+
+fn p_block() {
+    let brace = p_expect("\{", "an opening brace")
+    if not parse_ok() {
+        return nil
+    }
+    let stmts = []
+    p_skip_nl()
+    while not p_check("\}") {
+        if p_check("EOF") {
+            return parse_fail("parse", "Expected right brace to close block, got end of input", p_peek()["line"])
+        }
+        push(stmts, p_statement())
+        if not parse_ok() {
+            return nil
+        }
+        p_end_statement()
+        if not parse_ok() {
+            return nil
+        }
+        p_skip_nl()
+    }
+    p_expect("\}", nil)
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "Block", "line": brace["line"], "stmts": stmts}
+}
+
+fn p_statement() {
+    let tok = p_peek()
+    let kind = tok["kind"]
+    if kind == "let" or kind == "const" {
+        return p_let_decl()
+    }
+    if kind == "fn" {
+        return p_fn_decl()
+    }
+    if kind == "if" {
+        return p_if_stmt()
+    }
+    if kind == "while" {
+        return p_while_stmt()
+    }
+    if kind == "for" {
+        return p_for_stmt()
+    }
+    if kind == "return" {
+        return p_return_stmt()
+    }
+    if kind == "break" {
+        p_next()
+        return {"tag": "Break", "line": tok["line"]}
+    }
+    if kind == "continue" {
+        p_next()
+        return {"tag": "Continue", "line": tok["line"]}
+    }
+    if kind == "\{" {
+        return p_block()
+    }
+    // Otherwise: expression or assignment.
+    let expr = p_expression()
+    if not parse_ok() {
+        return nil
+    }
+    if p_match("=") {
+        if not p_is_assign_target(expr) {
+            return parse_fail("parse", "Invalid assignment target", tok["line"])
+        }
+        let value = p_expression()
+        if not parse_ok() {
+            return nil
+        }
+        return {"tag": "Assign", "line": tok["line"], "target": expr, "value": value}
+    }
+    return {"tag": "ExprStmt", "line": tok["line"], "expr": expr}
+}
+
+fn p_is_assign_target(expr) {
+    return expr["tag"] == "Var" or expr["tag"] == "Index" or expr["tag"] == "Member"
+}
+
+fn p_let_decl() {
+    let tok = p_next()  // let or const
+    let name_tok = p_expect("ID", "a variable name")
+    if not parse_ok() {
+        return nil
+    }
+    let hint = nil
+    if p_match(":") {
+        hint = p_hint()
+        if not parse_ok() {
+            return nil
+        }
+    }
+    p_expect("=", "'=' (a 'let' needs an initializer)")
+    if not parse_ok() {
+        return nil
+    }
+    let expr = p_expression()
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "Let", "line": tok["line"], "name": name_tok["value"],
+            "expr": expr, "hint": hint, "const": tok["kind"] == "const"}
+}
+
+let P_TYPES = ["any", "list", "map", "nil", "number", "string", "bool", "fn"]
+
+fn p_hint() {
+    let tok = p_expect("ID", "a type name")
+    if not parse_ok() {
+        return nil
+    }
+    if not p_has(P_TYPES, tok["value"]) {
+        return parse_fail("parse", "Unknown type '" + tok["value"] + "' (known: any bool fn list map nil number string)", tok["line"])
+    }
+    return tok["value"]
+}
+
+fn p_fn_decl() {
+    let tok = p_next()  // fn
+    let name_tok = p_expect("ID", "a function name")
+    if not parse_ok() {
+        return nil
+    }
+    let params = p_params()
+    if not parse_ok() {
+        return nil
+    }
+    let ret = nil
+    if p_match(":") {
+        ret = p_hint()
+        if not parse_ok() {
+            return nil
+        }
+    }
+    let body = p_block()
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "FnDecl", "line": tok["line"], "name": name_tok["value"],
+            "params": params, "ret": ret, "body": body}
+}
+
+let P_COMPARE_OPS = ["==", "!=", "<", "<=", ">", ">="]
+
+fn p_params() {
+    p_expect("(", "'('")
+    if not parse_ok() {
+        return nil
+    }
+    let params = []
+    let seen = []
+    while not p_check(")") {
+        let name_tok = p_expect("ID", "a parameter name")
+        if not parse_ok() {
+            return nil
+        }
+        let name = name_tok["value"]
+        if p_has(seen, name) {
+            return parse_fail("parse", "Duplicate parameter '" + name + "'", p_peek()["line"])
+        }
+        push(seen, name)
+        let hint = nil
+        if p_match(":") {
+            hint = p_hint()
+            if not parse_ok() {
+                return nil
+            }
+        }
+        push(params, [name, hint])
+        if not p_match(",") and not p_check(")") {
+            return parse_fail("parse", "Expected ',' or ')' in parameter list", p_peek()["line"])
+        }
+    }
+    p_expect(")", nil)
+    if not parse_ok() {
+        return nil
+    }
+    return params
+}
+
+fn p_if_stmt() {
+    let tok = p_next()  // if
+    let cond = p_expression()
+    if not parse_ok() {
+        return nil
+    }
+    let blk = p_block()
+    if not parse_ok() {
+        return nil
+    }
+    let els = nil
+    if p_match("else") {
+        if p_check("if") {
+            let nested = p_if_stmt()
+            if not parse_ok() {
+                return nil
+            }
+            els = [nested]
+        } else {
+            let inner = p_block()
+            if not parse_ok() {
+                return nil
+            }
+            els = inner["stmts"]
+        }
+    }
+    return {"tag": "If", "line": tok["line"], "cond": cond, "then": blk["stmts"], "els": els}
+}
+
+fn p_while_stmt() {
+    let tok = p_next()  // while
+    let cond = p_expression()
+    if not parse_ok() {
+        return nil
+    }
+    let blk = p_block()
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "While", "line": tok["line"], "cond": cond, "body": blk["stmts"]}
+}
+
+fn p_for_stmt() {
+    let tok = p_next()  // for
+    let name_tok = p_expect("ID", "a loop variable")
+    if not parse_ok() {
+        return nil
+    }
+    p_expect("in", "'in'")
+    if not parse_ok() {
+        return nil
+    }
+    let iterable = p_expression()
+    if not parse_ok() {
+        return nil
+    }
+    let blk = p_block()
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "For", "line": tok["line"], "var": name_tok["value"],
+            "iterable": iterable, "body": blk["stmts"]}
+}
+
+fn p_return_stmt() {
+    let tok = p_next()  // return
+    let k = p_peek()["kind"]
+    let expr = nil
+    if k != "NL" and k != "\}" and k != "EOF" {
+        expr = p_expression()
+        if not parse_ok() {
+            return nil
+        }
+    }
+    return {"tag": "Return", "line": tok["line"], "expr": expr}
+}
+
+// ---- expressions (precedence climbing) --------------------------------------
+
+fn p_expression() {
+    return p_or_expr()
+}
+
+fn p_or_expr() {
+    let left = p_and_expr()
+    if not parse_ok() {
+        return nil
+    }
+    while p_match("or") {
+        let right = p_and_expr()
+        if not parse_ok() {
+            return nil
+        }
+        left = {"tag": "Binop", "line": left["line"], "op": "or", "left": left, "right": right}
+    }
+    return left
+}
+
+fn p_and_expr() {
+    let left = p_not_expr()
+    if not parse_ok() {
+        return nil
+    }
+    while p_match("and") {
+        let right = p_not_expr()
+        if not parse_ok() {
+            return nil
+        }
+        left = {"tag": "Binop", "line": left["line"], "op": "and", "left": left, "right": right}
+    }
+    return left
+}
+
+fn p_not_expr() {
+    let tok = p_peek()
+    if p_match("not") {
+        let inner = p_not_expr()
+        if not parse_ok() {
+            return nil
+        }
+        return {"tag": "Not", "line": tok["line"], "expr": inner}
+    }
+    return p_compare()
+}
+
+fn p_compare() {
+    let left = p_add()
+    if not parse_ok() {
+        return nil
+    }
+    let tok = p_peek()
+    if p_has(P_COMPARE_OPS, tok["kind"]) {
+        p_next()
+        let right = p_add()
+        if not parse_ok() {
+            return nil
+        }
+        // Non-associative on purpose (SPEC.md 3): `a < b < c` is a mistake.
+        if p_has(P_COMPARE_OPS, p_peek()["kind"]) {
+            return parse_fail("parse", "Chained comparison; combine with 'and', e.g. a < b and b < c", p_peek()["line"])
+        }
+        return {"tag": "Binop", "line": tok["line"], "op": tok["kind"], "left": left, "right": right}
+    }
+    return left
+}
+
+fn p_add() {
+    let left = p_mul()
+    if not parse_ok() {
+        return nil
+    }
+    while p_peek()["kind"] == "+" or p_peek()["kind"] == "-" {
+        let tok = p_next()
+        let right = p_mul()
+        if not parse_ok() {
+            return nil
+        }
+        left = {"tag": "Binop", "line": tok["line"], "op": tok["kind"], "left": left, "right": right}
+    }
+    return left
+}
+
+fn p_mul() {
+    let left = p_unary()
+    if not parse_ok() {
+        return nil
+    }
+    while p_peek()["kind"] == "*" or p_peek()["kind"] == "/" or p_peek()["kind"] == "%" {
+        let tok = p_next()
+        let right = p_unary()
+        if not parse_ok() {
+            return nil
+        }
+        left = {"tag": "Binop", "line": tok["line"], "op": tok["kind"], "left": left, "right": right}
+    }
+    return left
+}
+
+fn p_unary() {
+    let tok = p_peek()
+    if p_match("-") {
+        let inner = p_unary()
+        if not parse_ok() {
+            return nil
+        }
+        return {"tag": "Neg", "line": tok["line"], "expr": inner}
+    }
+    return p_postfix()
+}
+
+fn p_postfix() {
+    let expr = p_primary()
+    if not parse_ok() {
+        return nil
+    }
+    while true {
+        let tok = p_peek()
+        let kind = tok["kind"]
+        if kind == "(" {
+            p_next()
+            let args = []
+            while not p_check(")") {
+                push(args, p_expression())
+                if not parse_ok() {
+                    return nil
+                }
+                if not p_match(",") {
+                    break
+                }
+            }
+            p_expect(")", nil)
+            if not parse_ok() {
+                return nil
+            }
+            expr = {"tag": "Call", "line": tok["line"], "fn": expr, "args": args}
+        } else if kind == "[" {
+            p_next()
+            let index = p_expression()
+            if not parse_ok() {
+                return nil
+            }
+            p_expect("]", nil)
+            if not parse_ok() {
+                return nil
+            }
+            expr = {"tag": "Index", "line": tok["line"], "obj": expr, "index": index}
+        } else if kind == "." {
+            p_next()
+            let name_tok = p_expect("ID", "a property name after '.'")
+            if not parse_ok() {
+                return nil
+            }
+            expr = {"tag": "Member", "line": tok["line"], "obj": expr, "name": name_tok["value"]}
+        } else {
+            return expr
+        }
+    }
+}
+
+fn p_primary() {
+    let tok = p_next()
+    let kind = tok["kind"]
+    if kind == "NUM" {
+        return {"tag": "Num", "value": tok["value"], "line": tok["line"]}
+    }
+    if kind == "STR" {
+        let parts = []
+        for part in tok["value"] {
+            if part["k"] == "lit" {
+                push(parts, {"k": "lit", "t": part["t"]})
+            } else {
+                let e = p_parse_interp(part["t"], part["lh"])
+                if not parse_ok() {
+                    return nil
+                }
+                push(parts, {"k": "expr", "e": e})
+            }
+        }
+        return {"tag": "Str", "line": tok["line"], "parts": parts}
+    }
+    if kind == "ID" {
+        return {"tag": "Var", "line": tok["line"], "name": tok["value"]}
+    }
+    if kind == "true" {
+        return {"tag": "Bool", "value": true, "line": tok["line"]}
+    }
+    if kind == "false" {
+        return {"tag": "Bool", "value": false, "line": tok["line"]}
+    }
+    if kind == "nil" {
+        return {"tag": "Nil", "line": tok["line"]}
+    }
+    if kind == "(" {
+        let expr = p_expression()
+        if not parse_ok() {
+            return nil
+        }
+        p_expect(")", nil)
+        if not parse_ok() {
+            return nil
+        }
+        return expr
+    }
+    if kind == "[" {
+        return p_list_lit(tok)
+    }
+    if kind == "\{" {
+        return p_map_lit(tok)
+    }
+    if kind == "fn" {
+        let params = p_params()
+        if not parse_ok() {
+            return nil
+        }
+        let ret = nil
+        if p_match(":") {
+            ret = p_hint()
+            if not parse_ok() {
+                return nil
+            }
+        }
+        let body = p_block()
+        if not parse_ok() {
+            return nil
+        }
+        return {"tag": "FnExpr", "line": tok["line"], "params": params, "ret": ret, "body": body}
+    }
+    let shown = "end of input"
+    if kind != "EOF" {
+        shown = "'" + kind + "'"
+    }
+    return parse_fail("parse", "Unexpected " + shown, tok["line"])
+}
+
+fn p_list_lit(tok) {
+    let items = []
+    while not p_check("]") {
+        push(items, p_expression())
+        if not parse_ok() {
+            return nil
+        }
+        if not p_match(",") {
+            break
+        }
+        p_skip_nl()
+    }
+    p_expect("]", nil)
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "ListLit", "line": tok["line"], "items": items}
+}
+
+fn p_map_lit(tok) {
+    let items = []
+    while true {
+        p_skip_nl()
+        if p_check("\}") {
+            break
+        }
+        let key_tok = p_expect("STR", "a string key for the map")
+        if not parse_ok() {
+            return nil
+        }
+        let kv = key_tok["value"]
+        if len(kv) != 1 or kv[0]["k"] != "lit" {
+            return parse_fail("parse", "Map keys must be plain strings (no interpolation)", key_tok["line"])
+        }
+        p_expect(":", "':' after the key")
+        if not parse_ok() {
+            return nil
+        }
+        let value = p_expression()
+        if not parse_ok() {
+            return nil
+        }
+        push(items, [kv[0]["t"], value])
+        p_skip_nl()
+        if not p_match(",") {
+            break
+        }
+    }
+    p_expect("\}", nil)
+    if not parse_ok() {
+        return nil
+    }
+    return {"tag": "MapLit", "line": tok["line"], "items": items}
+}
+
+// Parse one {expr} found inside a string literal. Saves and restores the
+// outer parser state: parsing here is re-entrant.
+fn p_parse_interp(src, line) {
+    let save_toks = _PX_TOKS
+    let save_pos = _PX_POS
+    let lexfn = _PX_LEX_BOX[0]
+    let inner = lexfn(src)
+    if inner == nil {
+        return parse_fail("parse", "Unexpected token after expression in string interpolation", line)
+    }
+    _PX_TOKS = inner
+    _PX_POS = 0
+    let expr = p_expression()
+    if parse_ok() {
+        if p_peek()["kind"] != "EOF" {
+            parse_fail("parse", "Unexpected token after expression in string interpolation", line)
+        }
+    } else {
+        // The inner failure is reported with the string's line, like the host.
+        parse_fail("parse", "Unexpected token after expression in string interpolation", line)
+    }
+    _PX_TOKS = save_toks
+    _PX_POS = save_pos
+    return expr
+}

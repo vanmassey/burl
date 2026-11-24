@@ -228,12 +228,14 @@ Builtins are plain global values (~30 of them):
 | Maps | `keys(map)` `values(map)` `has(map, key)` |
 | Strings | `split(s, sep)` `upper(s)` `lower(s)` `str(v)` `slice(s, start, end)` `find(s, sub[, start])` `contains(s, sub)` `replace(s, old, new)` `trim(s)` |
 | Numbers | `num(v)` `int(n)` `abs(n)` `min(...)` `max(...)` `floor(n)` `round(n)` `random()` |
+| Calls | `apply(f, args)` — calls any function value with a list of arguments |
 | Files / time / modules | `read(path)` `write(path, text)` `clock()` `import(path)` |
 
 Notes: `push` returns the list (so it chains); `pop` errors on empty;
 `range(a, b, step)` needs a positive step; `num("12.5")` is `12.5`,
 `num("x")` is `nil` (parse failures are values, not crashes); `random()`
-is in `[0, 1)`; `clock()` is milliseconds since the epoch, as a number.
+is in `[0, 1)`; `clock()` is milliseconds since the epoch, as a number;
+`apply(len, ["hello"])` is `5`.
 
 ## 10. Errors
 

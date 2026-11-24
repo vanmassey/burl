@@ -108,18 +108,20 @@ burl/            the implementation (no dependencies)
   builtins.py    the lean core standard library
   __main__.py    CLI + REPL
 examples/        small, readable programs (all pass `burl check` in CI)
+benchmarks/      the benchmark suite (deterministic, expected-output-diffed)
 tests/           the language's behavior, as executable contract
 tests/bad/       planted bugs the checker must catch
 docs/            the one-page website (GitHub Pages)
+LEDGER.md        the deficiency ledger RELEASES v1.0-rc1 requires
 ```
 
 ## The voyage
 
 Shipped: **0.1** first light · **0.2** Stone (modules) · **0.3** Iron (the
-checker). Coming next, per the
+checker) · **0.4 Bootstrap** — the interpreter rewritten in Burl itself
+(`python -m burl src/burl.burl < program.burl`). Coming next, per the
 [roadmap](ROADMAP.md#the-voyage):
 
-- **0.4 Bootstrap** — the interpreter rewritten in Burl itself
 - **0.5 Keel** — a bytecode VM, diffed against the tree-walker in CI
 - **0.6 Dragon** — native executables, the compiler compiling itself
 - **0.7 Provisions** — `io`, `json`, `args` standard modules

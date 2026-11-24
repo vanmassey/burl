@@ -1,0 +1,842 @@
+// ============================================================================
+// interp.burl — The Burl interpreter, written in Burl.
+//
+// A direct port of burl/interpreter.py + burl/values.py: walks the AST maps
+// produced by parse.burl inside a chainable environment.
+//
+//   env   = {"v": {name: {"val","const","hint"}}, "p": parent-env or nil}
+//   burlfn = {"tag":"burlfn","name","params":[[name,hint],...],"ret","body","env"}
+//
+// Self-contained: own error state (_I_E) and the module-level signal slot
+// (I_SIG) that stands in for return/break/continue, since Burl has no
+// exceptions. All failures set _I_E and return nil; every caller checks.
+// Runtime errors are PRE-CHECKED here so host BurlError exceptions never
+// escape into the bootstrap chain (Burl cannot catch them).
+// ============================================================================
+
+// ---- error state ------------------------------------------------------------
+
+let _I_E = {"kind": "", "msg": "", "line": 0}
+
+fn interp_err() {
+    return _I_E
+}
+
+fn interp_fail(kind, msg, line) {
+    _I_E = {"kind": kind, "msg": msg, "line": line}
+    return nil
+}
+
+fn interp_fresh() {
+    return {"kind": "", "msg": "", "line": 0}
+}
+
+fn i_ok() {
+    return _I_E["kind"] == ""
+}
+
+// The one control-flow "signal" slot: "" | "return" | "break" | "continue".
+let I_SIG = {"kind": "", "value": nil}
+
+fn i_sig_clear() {
+    I_SIG = {"kind": "", "value": nil}
+    return nil
+}
+
+// ---- values: type, truthiness, formatting, equality -------------------------
+
+fn i_type(v) {
+    if v == nil {
+        return "nil"
+    }
+    let t = type(v)
+    if t == "map" and has(v, "tag") and v["tag"] == "burlfn" {
+        return "fn"
+    }
+    return t
+}
+
+fn i_truthy(v) {
+    let t = i_type(v)
+    if t == "nil" or t == "bool" {
+        return v == true
+    }
+    if t == "number" {
+        return v != 0
+    }
+    if t == "string" or t == "list" or t == "map" {
+        return len(v) > 0
+    }
+    return true   // functions
+}
+
+fn i_fmt_num(v) {
+    if v == int(v) and abs(v) < 10000000000000000.0 {
+        return str(int(v))
+    }
+    return str(v)
+}
+
+// Escape a string the way the host's json.dumps does for the cases Burl
+// programs can produce.
+fn i_jstr(s) {
+    let out = "\""
+    let i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == "\\" {
+            out = out + "\\\\"
+        } else if c == "\"" {
+            out = out + "\\\""
+        } else if c == "\n" {
+            out = out + "\\n"
+        } else if c == "\t" {
+            out = out + "\\t"
+        } else if c == "\r" {
+            out = out + "\\r"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out + "\""
+}
+
+// The single canonical way a value becomes display text (SPEC 5).
+fn i_fmt(v, quoted) {
+    if v == nil {
+        return "nil"
+    }
+    if v == true {
+        return "true"
+    }
+    if v == false {
+        return "false"
+    }
+    let t = i_type(v)
+    if t == "number" {
+        return i_fmt_num(v)
+    }
+    if t == "string" {
+        if quoted {
+            return i_jstr(v)
+        }
+        return v
+    }
+    if t == "list" {
+        let out = "["
+        for i in range(len(v)) {
+            if i > 0 {
+                out = out + ", "
+            }
+            out = out + i_fmt(v[i], true)
+        }
+        return out + "]"
+    }
+    if t == "map" {
+        let out = "\{"
+        let first = true
+        for k in keys(v) {
+            if not first {
+                out = out + ", "
+            }
+            first = false
+            out = out + i_jstr(k) + ": " + i_fmt(v[k], true)
+        }
+        return out + "\}"
+    }
+    if t == "fn" {
+        if type(v) == "map" {
+            return "<fn " + v["name"] + ">"
+        }
+        // Host builtins carry a name slot invisible to Burl; the corpus never
+        // formats one, so keep it generic.
+        return "<fn ?>"
+    }
+    return str(v)
+}
+
+fn i_is_equal(a, b) {
+    if i_type(a) != i_type(b) {
+        return false
+    }
+    let t = i_type(a)
+    if t == "list" {
+        if len(a) != len(b) {
+            return false
+        }
+        for i in range(len(a)) {
+            if not i_is_equal(a[i], b[i]) {
+                return false
+            }
+        }
+        return true
+    }
+    if t == "map" {
+        if len(a) != len(b) {
+            return false
+        }
+        for k in keys(a) {
+            if not has(b, k) {
+                return false
+            }
+            if not i_is_equal(a[k], b[k]) {
+                return false
+            }
+        }
+        return true
+    }
+    return a == b
+}
+
+// ---- type hints (SPEC.md section 8) -----------------------------------------
+
+fn i_satisfies(v, hint) {
+    if hint == "any" {
+        return true
+    }
+    if hint == "number" {
+        return i_type(v) == "number"
+    }
+    return i_type(v) == hint
+}
+
+fn i_check_hint(v, hint, name, line) {
+    if hint == nil or hint == "any" {
+        return nil
+    }
+    if not i_satisfies(v, hint) {
+        return interp_fail("runtime", "'" + name + "' is declared as '" + hint +
+            "' but got " + i_fmt(v, false) + " of type '" + i_type(v) + "'", line)
+    }
+    return nil
+}
+
+// ---- environments ------------------------------------------------------------
+
+fn i_env_new(p) {
+    return {"v": {}, "p": p}
+}
+
+fn i_env_find(env, name) {
+    let e = env
+    while e != nil {
+        if has(e["v"], name) {
+            return e
+        }
+        e = e["p"]
+    }
+    return nil
+}
+
+fn i_get(env, name, line) {
+    let e = i_env_find(env, name)
+    if e == nil {
+        return interp_fail("runtime", "Undefined name '" + name + "'", line)
+    }
+    return e["v"][name]["val"]
+}
+
+fn i_define(env, name, value, line, cnst, hint) {
+    if has(env["v"], name) {
+        return interp_fail("runtime", "Name '" + name + "' is already defined in this block", line)
+    }
+    i_check_hint(value, hint, name, line)
+    if _I_E["kind"] != "" {
+        return nil
+    }
+    env["v"][name] = {"val": value, "const": cnst, "hint": hint}
+    return nil
+}
+
+fn i_assign(env, name, value, line) {
+    let e = i_env_find(env, name)
+    if e == nil {
+        return interp_fail("runtime", "Undefined name '" + name + "'", line)
+    }
+    let cell = e["v"][name]
+    if cell["const"] {
+        return interp_fail("runtime", "Cannot assign to const '" + name + "'", line)
+    }
+    i_check_hint(value, cell["hint"], name, line)
+    if _I_E["kind"] != "" {
+        return nil
+    }
+    cell["val"] = value
+    return nil
+}
+
+// ---- statements --------------------------------------------------------------
+
+fn i_exec_stmts(stmts, env) {
+    for st in stmts {
+        i_exec_stmt(st, env)
+        if not i_ok() or I_SIG["kind"] != "" {
+            return nil
+        }
+    }
+    return nil
+}
+
+fn i_exec_stmt(st, env) {
+    let tag = st["tag"]
+    if tag == "Let" {
+        let v = i_eval(st["expr"], env)
+        if not i_ok() {
+            return nil
+        }
+        i_define(env, st["name"], v, st["line"], st["const"], st["hint"])
+        return nil
+    }
+    if tag == "FnDecl" {
+        let fnv = {"tag": "burlfn", "name": st["name"], "params": st["params"],
+                   "ret": st["ret"], "body": st["body"], "env": env}
+        i_define(env, st["name"], fnv, st["line"], false, nil)
+        return nil
+    }
+    if tag == "If" {
+        let c = i_eval(st["cond"], env)
+        if not i_ok() {
+            return nil
+        }
+        if i_truthy(c) {
+            i_exec_stmts(st["then"], i_env_new(env))
+        } else if st["els"] != nil {
+            i_exec_stmts(st["els"], i_env_new(env))
+        }
+        return nil
+    }
+    if tag == "While" {
+        while true {
+            let c = i_eval(st["cond"], env)
+            if not i_ok() {
+                return nil
+            }
+            if not i_truthy(c) {
+                break
+            }
+            i_exec_stmts(st["body"], i_env_new(env))
+            if not i_ok() {
+                return nil
+            }
+            if I_SIG["kind"] == "break" {
+                i_sig_clear()
+                break
+            }
+            if I_SIG["kind"] == "continue" {
+                i_sig_clear()
+                continue
+            }
+            if I_SIG["kind"] == "return" {
+                return nil   // propagate upward
+            }
+        }
+        return nil
+    }
+    if tag == "For" {
+        let iterable = i_eval(st["iterable"], env)
+        if not i_ok() {
+            return nil
+        }
+        let it = i_type(iterable)
+        if it != "list" and it != "string" and it != "map" {
+            return interp_fail("runtime", "for-in needs a list, string or map, got " + it, st["line"])
+        }
+        let n = len(iterable)
+        for idx in range(n) {
+            let loop_env = i_env_new(env)
+            if it == "list" {
+                i_define(loop_env, st["var"], iterable[idx], st["line"], false, nil)
+            } else if it == "string" {
+                i_define(loop_env, st["var"], iterable[idx], st["line"], false, nil)
+            } else {
+                i_define(loop_env, st["var"], keys(iterable)[idx], st["line"], false, nil)
+            }
+            if not i_ok() {
+                return nil
+            }
+            i_exec_stmts(st["body"], i_env_new(loop_env))
+            if not i_ok() {
+                return nil
+            }
+            if I_SIG["kind"] == "break" {
+                i_sig_clear()
+                break
+            }
+            if I_SIG["kind"] == "continue" {
+                i_sig_clear()
+                continue
+            }
+            if I_SIG["kind"] == "return" {
+                return nil
+            }
+            // Note: unlike Python, a body that mutates the list being walked
+            // still walks the original length snapshot — the corpus never
+            // mutates while iterating (see the 0.4 honest-omissions note).
+        }
+        return nil
+    }
+    if tag == "Return" {
+        let v = nil
+        if st["expr"] != nil {
+            v = i_eval(st["expr"], env)
+            if not i_ok() {
+                return nil
+            }
+        }
+        I_SIG = {"kind": "return", "value": v}
+        return nil
+    }
+    if tag == "Break" {
+        I_SIG = {"kind": "break", "value": nil}
+        return nil
+    }
+    if tag == "Continue" {
+        I_SIG = {"kind": "continue", "value": nil}
+        return nil
+    }
+    if tag == "ExprStmt" {
+        i_eval(st["expr"], env)
+        return nil
+    }
+    if tag == "Assign" {
+        return i_exec_assign(st, env)
+    }
+    if tag == "Block" {
+        i_exec_stmts(st["stmts"], i_env_new(env))
+        return nil
+    }
+    return interp_fail("runtime", "Unknown statement", st["line"])
+}
+
+fn i_exec_assign(st, env) {
+    let target = st["target"]
+    let line = st["line"]
+    if target["tag"] == "Var" {
+        let v = i_eval(st["value"], env)
+        if not i_ok() {
+            return nil
+        }
+        i_assign(env, target["name"], v, line)
+        return nil
+    }
+    // Index / Member targets: evaluate the container, then mutate it.
+    let container = i_eval(target["obj"], env)
+    if not i_ok() {
+        return nil
+    }
+    let value = i_eval(st["value"], env)
+    if not i_ok() {
+        return nil
+    }
+    if target["tag"] == "Index" {
+        let index = i_eval(target["index"], env)
+        if not i_ok() {
+            return nil
+        }
+        let ct = i_type(container)
+        if ct == "list" {
+            let i = i_check_int_index(len(container), index, line)
+            if not i_ok() {
+                return nil
+            }
+            container[i] = value
+            return nil
+        }
+        if ct == "map" {
+            if i_type(index) != "string" {
+                return interp_fail("runtime", "Map keys must be strings, got " + i_type(index), line)
+            }
+            container[index] = value
+            return nil
+        }
+        return interp_fail("runtime", "Cannot index-assign into " + ct, line)
+    }
+    // Member
+    if i_type(container) != "map" {
+        return interp_fail("runtime", "." + target["name"] + " access needs a map, got " + i_type(container), line)
+    }
+    container[target["name"]] = value
+    return nil
+}
+
+// ---- expressions -------------------------------------------------------------
+
+fn i_eval(expr, env) {
+    let tag = expr["tag"]
+    if tag == "Num" or tag == "Bool" {
+        return expr["value"]
+    }
+    if tag == "Nil" {
+        return nil
+    }
+    if tag == "Var" {
+        return i_get(env, expr["name"], expr["line"])
+    }
+    if tag == "Str" {
+        let out = ""
+        for p in expr["parts"] {
+            if p["k"] == "lit" {
+                out = out + p["t"]
+            } else {
+                let v = i_eval(p["e"], env)
+                if not i_ok() {
+                    return nil
+                }
+                out = out + i_fmt(v, false)
+            }
+        }
+        return out
+    }
+    if tag == "ListLit" {
+        let out = []
+        for item in expr["items"] {
+            let v = i_eval(item, env)
+            if not i_ok() {
+                return nil
+            }
+            push(out, v)
+        }
+        return out
+    }
+    if tag == "MapLit" {
+        let out = {}
+        for kv in expr["items"] {
+            let v = i_eval(kv[1], env)
+            if not i_ok() {
+                return nil
+            }
+            out[kv[0]] = v
+        }
+        return out
+    }
+    if tag == "Binop" {
+        return i_eval_binop(expr, env)
+    }
+    if tag == "Not" {
+        let v = i_eval(expr["expr"], env)
+        if not i_ok() {
+            return nil
+        }
+        return not i_truthy(v)
+    }
+    if tag == "Neg" {
+        let v = i_eval(expr["expr"], env)
+        if not i_ok() {
+            return nil
+        }
+        if i_type(v) != "number" {
+            return interp_fail("runtime", "Unary '-' needs a number, got " + i_type(v), expr["line"])
+        }
+        return -v
+    }
+    if tag == "Call" {
+        return i_eval_call(expr, env)
+    }
+    if tag == "Index" {
+        return i_eval_index(expr, env)
+    }
+    if tag == "Member" {
+        return i_eval_member(expr, env)
+    }
+    if tag == "FnExpr" {
+        return {"tag": "burlfn", "name": "<anonymous>", "params": expr["params"],
+                "ret": expr["ret"], "body": expr["body"], "env": env}
+    }
+    return interp_fail("runtime", "Unknown expression", expr["line"])
+}
+
+fn i_eval_binop(expr, env) {
+    let op = expr["op"]
+    let line = expr["line"]
+    if op == "and" {
+        let left = i_eval(expr["left"], env)
+        if not i_ok() {
+            return nil
+        }
+        if i_truthy(left) {
+            return i_eval(expr["right"], env)
+        }
+        return left
+    }
+    if op == "or" {
+        let left = i_eval(expr["left"], env)
+        if not i_ok() {
+            return nil
+        }
+        if i_truthy(left) {
+            return left
+        }
+        return i_eval(expr["right"], env)
+    }
+    let left = i_eval(expr["left"], env)
+    if not i_ok() {
+        return nil
+    }
+    let right = i_eval(expr["right"], env)
+    if not i_ok() {
+        return nil
+    }
+    let lt = i_type(left)
+    let rt = i_type(right)
+    if op == "==" {
+        return i_is_equal(left, right)
+    }
+    if op == "!=" {
+        return not i_is_equal(left, right)
+    }
+    if op == "+" and lt == "string" and rt == "string" {
+        return left + right
+    }
+    if op == "<" or op == "<=" or op == ">" or op == ">=" {
+        let ok = (lt == "number" and rt == "number") or (lt == "string" and rt == "string")
+        if not ok {
+            return interp_fail("runtime", "Cannot compare " + lt + " and " + rt
+                + " with '" + op + "'", line)
+        }
+        if op == "<" {
+            return left < right
+        }
+        if op == "<=" {
+            return left <= right
+        }
+        if op == ">" {
+            return left > right
+        }
+        return left >= right
+    }
+    if lt != "number" or rt != "number" {
+        return interp_fail("runtime", "Operator '" + op + "' needs numbers, got " + lt + " and " + rt, line)
+    }
+    if op == "+" {
+        return left + right
+    }
+    if op == "-" {
+        return left - right
+    }
+    if op == "*" {
+        return left * right
+    }
+    if op == "/" {
+        if right == 0 {
+            return interp_fail("runtime", "Division by zero", line)
+        }
+        return left / right
+    }
+    if op == "%" {
+        if right == 0 {
+            return interp_fail("runtime", "Modulo by zero", line)
+        }
+        return left % right
+    }
+    return interp_fail("runtime", "Unknown operator '" + op + "'", line)
+}
+
+fn i_check_int_index(n, index, line) {
+    if i_type(index) != "number" or index != int(index) {
+        return interp_fail("runtime", "Index must be a whole number, got " + i_fmt(index, true), line)
+    }
+    let i = int(index)
+    if i < 0 or i >= n {
+        return interp_fail("runtime", "Index " + str(i) + " out of range (length " + str(n) + ")", line)
+    }
+    return i
+}
+
+fn i_map_get(map_, key, line, via) {
+    if not has(map_, key) {
+        return interp_fail("runtime", "Map has no key '" + key + "' (via " + via + ")", line)
+    }
+    return map_[key]
+}
+
+fn i_eval_index(expr, env) {
+    let obj = i_eval(expr["obj"], env)
+    if not i_ok() {
+        return nil
+    }
+    let index = i_eval(expr["index"], env)
+    if not i_ok() {
+        return nil
+    }
+    let t = i_type(obj)
+    if t == "list" {
+        let i = i_check_int_index(len(obj), index, expr["line"])
+        if not i_ok() {
+            return nil
+        }
+        return obj[i]
+    }
+    if t == "string" {
+        let i = i_check_int_index(len(obj), index, expr["line"])
+        if not i_ok() {
+            return nil
+        }
+        return obj[i]
+    }
+    if t == "map" {
+        if i_type(index) != "string" {
+            return interp_fail("runtime", "Map keys must be strings, got " + i_type(index), expr["line"])
+        }
+        return i_map_get(obj, index, expr["line"], "index")
+    }
+    return interp_fail("runtime", "Cannot index " + t, expr["line"])
+}
+
+fn i_eval_member(expr, env) {
+    let obj = i_eval(expr["obj"], env)
+    if not i_ok() {
+        return nil
+    }
+    if i_type(obj) == "map" {
+        return i_map_get(obj, expr["name"], expr["line"], "." + expr["name"])
+    }
+    return interp_fail("runtime", "." + expr["name"] + " access needs a map, got " + i_type(obj), expr["line"])
+}
+
+fn i_eval_call(expr, env) {
+    let fnv = i_eval(expr["fn"], env)
+    if not i_ok() {
+        return nil
+    }
+    let args = []
+    for a in expr["args"] {
+        let v = i_eval(a, env)
+        if not i_ok() {
+            return nil
+        }
+        push(args, v)
+    }
+    let line = expr["line"]
+    // i_type reports "fn" for BOTH kinds; the raw map-ness tells them apart.
+    if type(fnv) == "map" {
+        return i_call_fn(fnv, args, line)
+    }
+    if i_type(fnv) != "fn" {
+        return interp_fail("runtime", "Cannot call " + i_type(fnv), line)
+    }
+    // A host builtin: run it through the captured host apply (APPLY),
+    // not the engine's wrapper: the wrapper can't take the call line,
+    // and this path is hot.
+    return APPLY(fnv, args)
+}
+
+fn i_call_fn(fnv, args, line) {
+    let params = fnv["params"]
+    if len(args) != len(params) {
+        return interp_fail("runtime", "Function '" + fnv["name"] + "' expects "
+            + str(len(params)) + " argument(s), got " + str(len(args)), line)
+    }
+    let call_env = i_env_new(fnv["env"])
+    for i in range(len(params)) {
+        i_define(call_env, params[i][0], args[i], line, false, params[i][1])
+        if not i_ok() {
+            return nil
+        }
+    }
+    let saved_sig = I_SIG
+    i_sig_clear()
+    i_exec_stmts(fnv["body"]["stmts"], i_env_new(call_env))
+    let ret = nil
+    if not i_ok() {
+        I_SIG = saved_sig
+        return nil
+    }
+    if I_SIG["kind"] == "return" {
+        ret = I_SIG["value"]
+    }
+    I_SIG = saved_sig
+    i_check_hint(ret, fnv["ret"], "return of '" + fnv["name"] + "'", line)
+    if not i_ok() {
+        return nil
+    }
+    return ret
+}
+
+// ---- globals -----------------------------------------------------------------
+
+// The engine's own `apply`, bound into every fresh globals env: user
+// programs can apply Burl-defined fns (maps tagged "burlfn") too, which
+// the host builtin cannot run. Host fns fall through to the previous
+// binding of the name — the host builtin at level 0; at depth 2+, this
+// same wrapper one level up — and every chain bottoms out at the host.
+let APPLY = apply
+
+// The 0-line interp_fails here lose the user's call-site line, a known
+// divergence: see LEDGER.md L-010.
+fn i_apply(f, args) {
+    if i_type(args) != "list" {
+        return interp_fail("runtime", "apply(): argument 2 must be a list, got " + i_type(args), 0)
+    }
+    if i_type(f) != "fn" {
+        return interp_fail("runtime", "apply(): argument 1 must be a fn, got " + i_type(f), 0)
+    }
+    if type(f) == "map" {
+        return i_call_fn(f, args, 0)
+    }
+    return APPLY(f, args)
+}
+
+// The leaf globals: every builtin, hardcoded as a literal reference (Burl has
+// no eval). One level up, these names resolve through the closure chain to
+// the same real host builtins.
+fn i_make_globals() {
+    let g = i_env_new(nil)
+    g["v"]["print"] = {"val": print, "const": false, "hint": nil}
+    g["v"]["input"] = {"val": input, "const": false, "hint": nil}
+    g["v"]["len"] = {"val": len, "const": false, "hint": nil}
+    g["v"]["type"] = {"val": type, "const": false, "hint": nil}
+    g["v"]["push"] = {"val": push, "const": false, "hint": nil}
+    g["v"]["pop"] = {"val": pop, "const": false, "hint": nil}
+    g["v"]["range"] = {"val": range, "const": false, "hint": nil}
+    g["v"]["join"] = {"val": join, "const": false, "hint": nil}
+    g["v"]["keys"] = {"val": keys, "const": false, "hint": nil}
+    g["v"]["values"] = {"val": values, "const": false, "hint": nil}
+    g["v"]["has"] = {"val": has, "const": false, "hint": nil}
+    g["v"]["split"] = {"val": split, "const": false, "hint": nil}
+    g["v"]["upper"] = {"val": upper, "const": false, "hint": nil}
+    g["v"]["lower"] = {"val": lower, "const": false, "hint": nil}
+    g["v"]["slice"] = {"val": slice, "const": false, "hint": nil}
+    g["v"]["find"] = {"val": find, "const": false, "hint": nil}
+    g["v"]["contains"] = {"val": contains, "const": false, "hint": nil}
+    g["v"]["replace"] = {"val": replace, "const": false, "hint": nil}
+    g["v"]["trim"] = {"val": trim, "const": false, "hint": nil}
+    g["v"]["str"] = {"val": str, "const": false, "hint": nil}
+    g["v"]["num"] = {"val": num, "const": false, "hint": nil}
+    g["v"]["int"] = {"val": int, "const": false, "hint": nil}
+    g["v"]["abs"] = {"val": abs, "const": false, "hint": nil}
+    g["v"]["min"] = {"val": min, "const": false, "hint": nil}
+    g["v"]["max"] = {"val": max, "const": false, "hint": nil}
+    g["v"]["floor"] = {"val": floor, "const": false, "hint": nil}
+    g["v"]["round"] = {"val": round, "const": false, "hint": nil}
+    g["v"]["random"] = {"val": random, "const": false, "hint": nil}
+    g["v"]["read"] = {"val": read, "const": false, "hint": nil}
+    g["v"]["write"] = {"val": write, "const": false, "hint": nil}
+    g["v"]["clock"] = {"val": clock, "const": false, "hint": nil}
+    g["v"]["apply"] = {"val": i_apply, "const": false, "hint": nil}
+    g["v"]["import"] = {"val": import, "const": false, "hint": nil}
+    return g
+}
+
+// ---- bootstrap entry point -----------------------------------------------------
+
+// Execute a whole Program AST into an existing globals env. Used by
+// kernel.burl via the deps map. Leaves _I_E set and returns nil on failure.
+fn i_boot_exec(ast, genv) {
+    _I_E = interp_fresh()
+    i_sig_clear()
+    i_exec_stmts(ast["stmts"], genv)
+    if not i_ok() {
+        return nil
+    }
+    if I_SIG["kind"] == "return" {
+        return interp_fail("runtime", "'return' used outside of a function", ast["line"])
+    }
+    if I_SIG["kind"] == "break" {
+        return interp_fail("runtime", "'break' used outside of a loop", ast["line"])
+    }
+    if I_SIG["kind"] == "continue" {
+        return interp_fail("runtime", "'continue' used outside of a loop", ast["line"])
+    }
+    return nil
+}

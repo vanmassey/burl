@@ -25,6 +25,40 @@ def _read(path):
         return None
 
 
+def _with_big_stack(fn):
+    """Run fn() on a thread with a large stack.
+
+    Bootstrap programs interpret interpreters: every Burl layer multiplies
+    the Python call depth, and the default stack can't take it. Python-side
+    shim only — the language is unchanged.
+    """
+    import threading
+
+    sys.setrecursionlimit(300000)
+    for size in (512, 256, 128, 64, 32):
+        try:
+            threading.stack_size(size * 1024 * 1024)
+            break
+        except (ValueError, RuntimeError):
+            continue
+    box = {}
+
+    def target():
+        try:
+            box["code"] = fn()
+        except SystemExit as exc:
+            box["code"] = exc.code
+        except BaseException as exc:  # re-raise in the main thread
+            box["err"] = exc
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+    if "err" in box:
+        raise box["err"]
+    return box.get("code", 0)
+
+
 def run_file(path):
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -37,7 +71,7 @@ def run_file(path):
         # import() resolves relative paths against the main file's directory,
         # not the current working directory (SPEC.md 11).
         interp.base_dir = os.path.dirname(os.path.abspath(path))
-        interp.run(parse(source))
+        _with_big_stack(lambda: interp.run(parse(source)))
     except BurlError as err:
         print(f"burl: {err}", file=sys.stderr)
         return 1

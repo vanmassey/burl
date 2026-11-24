@@ -1,0 +1,57 @@
+// Benchmark: strings, interpolation, maps, closures.
+// A word-frequency count over a generated corpus, with string-tool work in
+// every iteration. Deterministic: the corpus is arithmetic, not random.
+
+const words = ["oak", "ash", "birch", "alder", "fir", "elm", "hazel", "willow"]
+
+fn word_at(i) {
+    return words[i % len(words)]
+}
+
+let lines = []
+for i in range(300) {
+    let parts = []
+    for j in range(8) {
+        push(parts, upper(word_at(i * 7 + j * 3)))
+    }
+    let line = join(parts, " ")
+    // exercise find/slice/replace on every line
+    if contains(line, "OAK") {
+        line = replace(line, "OAK", "oak")
+    }
+    push(lines, trim(line) + " ({len(line)} chars)")
+}
+
+let counts = {}
+let total = 0
+const lower_words = lower(join(words, " "))
+for line in lines {
+    let body = slice(line, 0, find(line, " ("))
+    for w in split(body, " ") {
+        if has(counts, w) {
+            counts[w] = counts[w] + 1
+        } else {
+            counts[w] = 1
+        }
+        total = total + 1
+    }
+}
+
+// closure-and-scroll work on top: sum rank-adjusted counts
+fn make_weight(k) {
+    return fn(count) {
+        return count * k
+    }
+}
+
+let weight = make_weight(3)
+let weighted = 0
+for word in split(lower_words, " ") {
+    if has(counts, word) {
+        weighted = weighted + weight(counts[word])
+    }
+}
+
+print("tokens: {total}")
+print("distinct: {len(counts)}")
+print("weighted: {weighted}")

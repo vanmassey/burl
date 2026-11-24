@@ -8,7 +8,7 @@ import random as _py_random
 import time
 
 from .errors import BurlRuntimeError
-from .values import Fn, format_value, type_name
+from .values import Fn, BurlFunction, format_value, type_name
 
 
 class Builtin(Fn):
@@ -297,6 +297,27 @@ def bi_round(args, line):
 @_builtin("random", 0)
 def bi_random(args, line):
     return _py_random.random()
+
+
+@_builtin("apply", 2)
+def bi_apply(args, line):
+    """apply(f, args_list): call f with a list of arguments.
+
+    Added for the 0.4 bootstrap: Burl code driving the host runtime needs a
+    way to hand a list of already-evaluated arguments to a builtin. A
+    general-purpose tool as well.
+    """
+    fn = args[0]
+    arg_list = args[1]
+    if not isinstance(arg_list, list):
+        raise BurlRuntimeError(
+            f"apply(): argument 2 must be a list, got {type_name(arg_list)}", line)
+    if isinstance(fn, Builtin):
+        return fn.call(arg_list, line)
+    if isinstance(fn, BurlFunction):
+        from .interpreter import _host_call_function
+        return _host_call_function(fn, arg_list, line)
+    raise BurlRuntimeError(f"apply(): argument 1 must be a fn, got {type_name(fn)}", line)
 
 
 # ---- files / time ----------------------------------------------------------------
