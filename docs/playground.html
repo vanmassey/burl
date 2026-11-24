@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Burl — Playground</title>
+<meta name="description" content="Write, run and type-check Burl code right in your browser. A small, compatible scripting language — simple like Linux, forward-minded, easy for humans and AI. The real interpreter runs via Pyodide (WebAssembly) — no server, no install.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23161d26'/%3E%3Cpath d='M10 24V8h6.2c3.2 0 5.3 1.5 5.3 4 0 1.7-.9 2.9-2.4 3.5 2 .5 3.2 1.9 3.2 3.9 0 2.8-2.3 4.6-5.7 4.6H10zm3-9.2h2.8c1.8 0 2.9-.8 2.9-2.1s-1.1-2.1-2.9-2.1H13v4.2zm0 6.6h3.2c2 0 3.2-.9 3.2-2.3 0-1.5-1.2-2.3-3.2-2.3H13v4.6z' fill='%23e8a54b'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<style>
+  :root {
+    --bg: #0d1218;
+    --panel: #151c25;
+    --panel-2: #1a2330;
+    --inset: #10161e;
+    --line: #253041;
+    --text: #d9e1ec;
+    --muted: #8b98a9;
+    --dim: #64708a;
+    --amber: #e8a54b;
+    --amber-soft: #f0b564;
+    --green: #84c79a;
+    --red: #e5716b;
+    --blue: #7fc7ff;
+    --purple: #c9a3f0;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: var(--text);
+    background: var(--bg);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono, pre, .CodeMirror {
+    font-family: ui-monospace, "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  }
+
+  /* ---------- header ---------- */
+  header {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: .8rem 1.25rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .logo {
+    display: flex; align-items: center; gap: .6rem;
+    font-weight: 700; font-size: 1.25rem; letter-spacing: -.01em; color: var(--text);
+  }
+  .logo svg { display: block; }
+  .logo .version {
+    font: .68rem/1.4 ui-monospace, monospace; font-weight: 400;
+    color: var(--amber); border: 1px solid var(--line); border-radius: 99px;
+    padding: .05rem .55rem; background: var(--inset);
+  }
+  .tagline { color: var(--muted); font-size: .9rem; flex: 1 1 auto; min-width: 16rem; }
+  .nav { display: flex; gap: 1rem; font-size: .9rem; }
+  .nav a {
+    color: var(--text); padding: .25rem .7rem; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel-2);
+  }
+  .nav a:hover { border-color: var(--amber); color: var(--amber-soft); text-decoration: none; }
+
+  main { max-width: 92rem; margin: 0 auto; padding: 1.1rem 1.25rem 2.5rem; }
+
+  /* ---------- toolbar ---------- */
+  .toolbar {
+    display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+    margin-bottom: .9rem;
+  }
+  .toolbar .spacer { flex: 1; }
+  select {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    font: .86rem/1 ui-monospace, monospace; padding: .55rem .7rem; cursor: pointer;
+  }
+  select:focus { outline: 1px solid var(--amber); }
+  button {
+    font: 600 .88rem/1 system-ui, sans-serif;
+    border-radius: 6px; border: 1px solid var(--line); cursor: pointer;
+    padding: .62rem 1.15rem; display: inline-flex; align-items: center; gap: .5rem;
+    color: var(--text); background: var(--panel-2);
+    transition: border-color .15s, background .15s, opacity .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--amber); }
+  button:disabled { opacity: .55; cursor: wait; }
+  button.primary { background: var(--amber); border-color: var(--amber); color: #191208; }
+  button.primary:hover:not(:disabled) { background: var(--amber-soft); }
+  button .kbd {
+    font: 600 .68rem/1 ui-monospace, monospace; opacity: .75;
+    border: 1px solid rgba(0,0,0,.35); border-radius: 4px; padding: .15rem .3rem;
+  }
+  button:not(.primary) .kbd { border-color: var(--line); }
+  .spinner {
+    width: .8rem; height: .8rem; border-radius: 50%;
+    border: 2px solid rgba(128,128,128,.35); border-top-color: currentColor;
+    animation: spin .7s linear infinite; display: none;
+  }
+  button.busy .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- split view ---------- */
+  .stage {
+    display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+    gap: .9rem; align-items: stretch;
+  }
+  .pane {
+    display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    overflow: hidden; min-height: 0;
+  }
+  .pane-head {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .45rem .9rem; border-bottom: 1px solid var(--line);
+    font: 600 .74rem/1 system-ui, sans-serif; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .pane-head .dot { color: var(--amber); letter-spacing: 0; }
+  .pane-head .right { margin-left: auto; }
+  #editor-wrap { height: 30rem; }
+  #editor-wrap .CodeMirror { height: 100%; background: var(--panel); color: var(--text); font-size: .92rem; line-height: 1.55; }
+  #editor-wrap .CodeMirror-gutters { background: var(--panel); border-right: 1px solid var(--line); }
+  #editor-wrap .CodeMirror-linenumber { color: var(--dim); }
+  #editor-wrap .CodeMirror-cursor { border-left: 2px solid var(--amber); }
+  #editor-wrap .CodeMirror-selected { background: #2a3644; }
+  .cm-s-default .cm-keyword { color: var(--amber); }
+  .cm-s-default .cm-type { color: var(--blue); }
+  .cm-s-default .cm-string { color: var(--green); }
+  .cm-s-default .cm-number { color: var(--purple); }
+  .cm-s-default .cm-comment { color: var(--dim); font-style: italic; }
+  .cm-s-default .cm-interp { color: var(--amber-soft); font-weight: 700; }
+  .cm-s-default .cm-variable { color: var(--text); }
+
+  /* ---------- output console ---------- */
+  #console {
+    flex: 1; min-height: 0; overflow: auto;
+    background: var(--inset); padding: .8rem 1rem;
+    font-size: .86rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    counter-reset: out;
+  }
+  #console .out-line { display: block; }
+  #console .out-err { color: var(--red); }
+  #console .out-sys { color: var(--dim); font-style: italic; }
+  #console .out-ok { color: var(--green); }
+  #console .out-warn { color: var(--amber-soft); }
+  #console a.out-link { word-break: break-all; }
+  .console-hint { color: var(--dim); }
+  #clear-btn {
+    font: 600 .68rem/1 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); background: transparent; border: 1px solid transparent;
+    padding: .3rem .55rem; border-radius: 5px;
+  }
+  #clear-btn:hover { color: var(--text); border-color: var(--line); }
+  .statusbar {
+    display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+    padding: .4rem .9rem; border-top: 1px solid var(--line);
+    font: .72rem/1.4 ui-monospace, monospace; color: var(--dim);
+  }
+  .statusbar .right { margin-left: auto; }
+  #engine-status.ready { color: var(--green); }
+  #engine-status.loading { color: var(--amber-soft); }
+  #engine-status.error { color: var(--red); }
+
+  /* ---------- reference card ---------- */
+  .ref {
+    margin-top: 2.2rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.4rem 1.6rem 1.6rem;
+  }
+  .ref h2 {
+    margin: 0 0 1rem; font-size: 1rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--amber); font-weight: 700;
+  }
+  .ref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6rem 2.4rem; }
+  .ref h3 {
+    margin: 1.2rem 0 .5rem; font-size: .82rem; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+  }
+  .ref h3:first-child { margin-top: 0; }
+  .ref table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+  .ref td { padding: .22rem .5rem .22rem 0; vertical-align: top; }
+  .ref td:first-child { white-space: nowrap; color: var(--blue); }
+  .ref td:last-child { color: var(--muted); }
+  .ref .builtin-list code {
+    display: inline-block; margin: 0 .35rem .3rem 0; padding: .12rem .45rem;
+    background: var(--inset); border: 1px solid var(--line); border-radius: 5px;
+    font-size: .78rem; color: var(--text); white-space: nowrap;
+  }
+  .ref .builtin-list code b { color: var(--blue); font-weight: 400; }
+  .ref code.k { color: var(--amber); }
+  .ref-note {
+    margin-top: 1.2rem; padding-top: .9rem; border-top: 1px solid var(--line);
+    font-size: .8rem; color: var(--dim);
+  }
+  .ref-note code { color: var(--muted); }
+
+  footer {
+    text-align: center; color: var(--dim); font-size: .78rem;
+    padding: 1.5rem 0 2.5rem;
+  }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 940px) {
+    .stage { grid-template-columns: 1fr; }
+    #editor-wrap { height: 24rem; }
+    #output-pane { min-height: 18rem; }
+    .ref-grid { grid-template-columns: 1fr; }
+    main { padding: 1rem .8rem 2rem; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="26" height="26" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#161d26"/><path d="M10 24V8h6.2c3.2 0 5.3 1.5 5.3 4 0 1.7-.9 2.9-2.4 3.5 2 .5 3.2 1.9 3.2 3.9 0 2.8-2.3 4.6-5.7 4.6H10zm3-9.2h2.8c1.8 0 2.9-.8 2.9-2.1s-1.1-2.1-2.9-2.1H13v4.2zm0 6.6h3.2c2 0 3.2-.9 3.2-2.3 0-1.5-1.2-2.3-3.2-2.3H13v4.6z" fill="#e8a54b"/></svg>
+    Burl <span class="version">v0.4.0</span>
+  </div>
+  <div class="tagline">A small, compatible scripting language — simple like Linux, forward-minded, easy for humans and AI.</div>
+  <nav class="nav">
+    <a href="./">Home</a>
+    <a href="https://github.com/vanmassey/burl" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/vanmassey/burl/blob/main/SPEC.md" target="_blank" rel="noopener">Spec</a>
+  </nav>
+</header>
+
+<main>
+  <div class="toolbar">
+    <select id="examples" title="Load a built-in example" aria-label="Built-in examples">
+      <option value="hello">Hello &amp; Interpolation</option>
+      <option value="closures">Closures &amp; Higher-Order Functions</option>
+      <option value="freq">Word Frequency Counter</option>
+      <option value="check">Type Checker Demo</option>
+    </select>
+    <span id="share-note" class="mono" style="font-size:.78rem;color:var(--green);visibility:hidden;">link copied ✓</span>
+    <span class="spacer"></span>
+    <button id="run-btn" class="primary" disabled title="Run the program">
+      <span class="spinner"></span>▶ Run <span class="kbd">Ctrl+Enter</span>
+    </button>
+    <button id="check-btn" disabled title="Run the static advisory type checker (burl check)">
+      <span class="spinner"></span>✓ Check <span class="kbd">burl check</span>
+    </button>
+    <button id="share-btn" title="Encode this code into the URL and copy a shareable link">
+      <span class="spinner"></span>🔗 Share
+    </button>
+  </div>
+
+  <div class="stage">
+    <section class="pane">
+      <div class="pane-head"><span class="dot">●</span> editor <span class="right mono" style="font-size:.68rem;letter-spacing:0;text-transform:none;">playground.burl</span></div>
+      <div id="editor-wrap"><textarea id="code"></textarea></div>
+    </section>
+
+    <section class="pane" id="output-pane">
+      <div class="pane-head"><span class="dot">●</span> output <span class="right"><button id="clear-btn">Clear</button></span></div>
+      <div id="console" aria-live="polite"><span class="console-hint">Burl runs entirely in your browser — the real interpreter compiles to WebAssembly. Waiting for Pyodide to load…</span></div>
+      <div class="statusbar">
+        <span id="engine-status" class="loading">loading Pyodide…</span>
+        <span class="right">burl 0.4.0 · python 3 in wasm</span>
+      </div>
+    </section>
+  </div>
+
+  <section class="ref">
+    <h2>Quick reference</h2>
+    <div class="ref-grid">
+      <div>
+        <h3>The 7 types</h3>
+        <table>
+          <tr><td><code>nil</code></td><td>absence of a value; missing things and failed lookups are <code>nil</code></td></tr>
+          <tr><td><code>bool</code></td><td><code>true</code> / <code>false</code>; <code>""</code>, <code>[]</code>, <code>{}</code> and <code>nil</code> are falsy</td></tr>
+          <tr><td><code>number</code></td><td>one number type — integers and decimals (<code>1</code>, <code>2.5</code>)</td></tr>
+          <tr><td><code>string</code></td><td>immutable UTF-8 text, interpolated: <code>"Hi, {name}!"</code>; escapes <code>\n \t \\ \" \{</code></td></tr>
+          <tr><td><code>list</code></td><td>ordered sequence: <code>[1, 2, 3]</code>; index from 0 with <code>items[0]</code></td></tr>
+          <tr><td><code>map</code></td><td>string keys, fast lookup: <code>{ "ada": 36 }</code>; dot access <code>person.name</code></td></tr>
+          <tr><td><code>fn</code></td><td>functions are values — pass them, store them, return them</td></tr>
+        </table>
+
+        <h3>Syntax basics</h3>
+        <table>
+          <tr><td><code class="k">let</code></td><td><code>let x = 1</code> · <code>let name : string = "Ada"</code> (optional type hint)</td></tr>
+          <tr><td><code class="k">const</code></td><td>immutable binding — assigning to it is an error</td></tr>
+          <tr><td><code class="k">fn</code></td><td><code>fn add(a, b) { return a + b }</code> · return type: <code>fn f() : number { ... }</code></td></tr>
+          <tr><td>closures</td><td>inner <code>fn</code>s see and update outer <code>let</code> bindings</td></tr>
+          <tr><td>control</td><td><code>if ... else</code>, <code>while</code>, <code>for x in ...</code>, <code>break</code>, <code>continue</code></td></tr>
+          <tr><td>statements</td><td>one per line, no semicolons; braces <code>{ }</code> carry over lines</td></tr>
+          <tr><td>operators</td><td><code>+ - * / %</code> · <code>== != &lt; &lt;= &gt; &gt;=</code> · <code>and or not</code></td></tr>
+          <tr><td><code class="k">import</code></td><td>namespaces: <code>import lib/math</code>, then <code>math.fib(10)</code></td></tr>
+          <tr><td>comments</td><td><code>// to end of line</code></td></tr>
+        </table>
+      </div>
+      <div>
+        <h3>Core builtins</h3>
+        <div class="builtin-list mono">
+          <code><b>print</b>(...)</code>
+          <code><b>len</b>(s|l|m)</code>
+          <code><b>type</b>(v)</code>
+          <code><b>push</b>(list, v)</code>
+          <code><b>pop</b>(list)</code>
+          <code><b>range</b>(a[, b, step])</code>
+          <code><b>split</b>(text, sep)</code>
+          <code><b>join</b>(list, sep)</code>
+          <code><b>keys</b>(map)</code>
+          <code><b>values</b>(map)</code>
+          <code><b>has</b>(map, key)</code>
+          <code><b>num</b>(v)</code>
+          <code><b>str</b>(v)</code>
+          <code><b>int</b>(n)</code>
+          <code><b>abs</b>(n)</code>
+          <code><b>min</b>(...)</code>
+          <code><b>max</b>(...)</code>
+          <code><b>floor</b>(n)</code>
+          <code><b>round</b>(n[, d])</code>
+          <code><b>random</b>()</code>
+          <code><b>upper</b>(s)</code>
+          <code><b>lower</b>(s)</code>
+          <code><b>trim</b>(s)</code>
+          <code><b>slice</b>(s, a, b)</code>
+          <code><b>find</b>(s, sub)</code>
+          <code><b>contains</b>(s, sub)</code>
+          <code><b>replace</b>(s, a, b)</code>
+          <code><b>clock</b>()</code>
+          <code><b>input</b>([prompt])</code>
+        </div>
+
+        <h3>Strings</h3>
+        <table>
+          <tr><td>interpolate</td><td><code>"Sum: {a + b}"</code> — any expression, auto-formatted</td></tr>
+          <tr><td>concatenate</td><td><code>"left" + "right"</code> works, but interpolation reads better</td></tr>
+          <tr><td>indexing</td><td><code>text[0]</code> → a 1-character string</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="ref-note">
+      Full contract: <a href="https://github.com/vanmassey/burl/blob/main/SPEC.md" target="_blank" rel="noopener">SPEC.md</a>.
+      The playground below runs the exact same interpreter and <code>burl check</code> as the CLI
+      (<code>python -m burl</code>), compiled to WebAssembly — same version, same errors, zero setup.
+    </div>
+  </section>
+
+  <footer>Burl is MIT-licensed, zero-dependency, pure Python 3.8+ — <a href="https://github.com/vanmassey/burl" target="_blank" rel="noopener">star it on GitHub</a> ⭑</footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
+<script>
+"use strict";
+
+/* ============================ examples ============================ */
+
+const EXAMPLES = {
+  hello:
+'// Hello & Interpolation — strings interpolate any expression with {..}\n' +
+'fn greet(name : string) : string {\n' +
+'    return "Hello, {name}!"\n' +
+'}\n' +
+'\n' +
+'for name in ["Ada", "Grace", "Linus"] {\n' +
+'    print(greet(name))\n' +
+'}\n',
+
+  closures:
+'// Closures & Higher-Order Functions — fn is just a value.\n' +
+'\n' +
+'fn make_counter() {\n' +
+'    let n = 0\n' +
+'    return fn() {\n' +
+'        n = n + 1      // the closure captures and updates the outer binding\n' +
+'        return n\n' +
+'    }\n' +
+'}\n' +
+'\n' +
+'let tick = make_counter()\n' +
+'print(tick())\n' +
+'print(tick())\n' +
+'print(tick())\n' +
+'\n' +
+'// Functions compose: pass a fn to a fn.\n' +
+'fn twice(f, x) {\n' +
+'    return f(f(x))\n' +
+'}\n' +
+'\n' +
+'fn inc(n : number) : number {\n' +
+'    return n + 1\n' +
+'}\n' +
+'\n' +
+'print("twice(inc, 10) = {twice(inc, 10)}")\n',
+
+  freq:
+'// Word Frequency Counter — maps, lists and fn-as-value.\n' +
+'\n' +
+'let text = "  To be or not to be THAT is the question THAT is  "\n' +
+'let counts = {}\n' +
+'\n' +
+'for word in split(trim(lower(text)), " ") {\n' +
+'    if has(counts, word) {\n' +
+'        counts[word] = counts[word] + 1\n' +
+'    } else {\n' +
+'        counts[word] = 1\n' +
+'    }\n' +
+'}\n' +
+'\n' +
+'// Sort by count, descending.\n' +
+'let best = []\n' +
+'let remaining = keys(counts)\n' +
+'while len(remaining) > 0 {\n' +
+'    let champion = remaining[0]\n' +
+'    for w in remaining {\n' +
+'        if counts[w] > counts[champion] {\n' +
+'            champion = w\n' +
+'        }\n' +
+'    }\n' +
+'    push(best, champion)\n' +
+'    let next = []\n' +
+'    for w in remaining {\n' +
+'        if w != champion {\n' +
+'            push(next, w)\n' +
+'        }\n' +
+'    }\n' +
+'    remaining = next\n' +
+'}\n' +
+'\n' +
+'for i in range(len(best)) {\n' +
+'    let word = best[i]\n' +
+'    print("{word}: {counts[word]}")\n' +
+'}\n',
+
+  check:
+'// Type Checker Demo — this source is fine for the parser, but the\n' +
+'// hints of SPEC.md 8 catch it before it ever runs.\n' +
+'//\n' +
+'//  Hit "Check" to run the static advisory type checker.\n' +
+'//  Hit "Run" to see what happens at runtime instead.\n' +
+'\n' +
+'fn badge(score : number) : string {\n' +
+'    return score        // declared : string, returns a number\n' +
+'}\n' +
+'\n' +
+'let label : string = badge(5)\n' +
+'let attempts : number = "ten"\n' +
+'\n' +
+'print("this line never prints")\n'
+};
+
+/* ============================ CodeMirror ============================ */
+
+const KEYWORDS = new Set(("fn let const if else while for in return break continue " +
+  "import and or not true false nil").split(" "));
+const TYPES = new Set(["number", "string", "bool", "list", "map", "fn", "any", "nil"]);
+
+CodeMirror.defineMode("burl", function () {
+  // Stack tracks string context: top "string" = inside "..." literal,
+  // top "interp" = inside {..} interpolation (possibly nested).
+  // braceDepth counts { } in real code (not inside strings) for auto-indent.
+  function token(stream, state) {
+    const top = state.stack[state.stack.length - 1];
+
+    if (top === "interp") {
+      if (stream.match("}")) { state.stack.pop(); return "interp"; }
+      if (stream.match("{")) { state.stack.push("interp"); return "interp"; }
+      if (stream.match('"')) { state.stack.push("string"); return "string"; }
+      if (stream.match("//")) { stream.skipToEnd(); return "comment"; }
+      if (stream.match(/^\d+(\.\d+)?/)) return "number";
+      if (stream.match(/^[A-Za-z_]\w*/)) {
+        const w = stream.current();
+        return KEYWORDS.has(w) ? "keyword" : TYPES.has(w) ? "type" : "variable";
+      }
+      if (stream.eatSpace()) return null;
+      stream.next();
+      return null;
+    }
+
+    if (top === "string") {
+      if (stream.match('"')) { state.stack.pop(); return "string"; }
+      if (stream.match(/^\\./)) return "string";           // \n \t \\ \" \{ \}
+      if (stream.match("{")) { state.stack.push("interp"); return "interp"; }
+      if (stream.match(/^[^"\\{]+/)) return "string";
+      stream.next();
+      return "string";
+    }
+
+    // normal code
+    if (stream.eatSpace()) return null;
+    if (stream.match("//")) { stream.skipToEnd(); return "comment"; }
+    if (stream.match('"')) { state.stack.push("string"); return "string"; }
+    if (stream.match("{")) { state.braceDepth = (state.braceDepth || 0) + 1; return null; }
+    if (stream.match("}")) {
+      state.braceDepth = Math.max(0, (state.braceDepth || 0) - 1);
+      return null;
+    }
+    if (stream.match(/^\d+(\.\d+)?/)) return "number";
+    if (stream.match(/^[A-Za-z_]\w*/)) {
+      const w = stream.current();
+      return KEYWORDS.has(w) ? "keyword" : TYPES.has(w) ? "type" : "variable";
+    }
+    stream.next();
+    return null;
+  }
+
+  return {
+    startState: function () { return { stack: [], braceDepth: 0 }; },
+    token: token,
+    indent: function (state, textAfter) {
+      const depth = state.braceDepth - (/^\s*}/.test(textAfter) ? 1 : 0);
+      return Math.max(0, depth) * 4;
+    },
+    lineComment: "//"
+  };
+});
+
+const editor = CodeMirror.fromTextArea(document.getElementById("code"), {
+  mode: "burl",
+  lineNumbers: true,
+  indentUnit: 4,
+  tabSize: 4,
+  indentWithTabs: true,
+  viewportMargin: Infinity,
+  extraKeys: {
+    "Ctrl-Enter": () => runBtn.click(),
+    "Cmd-Enter": () => runBtn.click()
+  }
+});
+
+/* ============================ console ============================ */
+
+const consoleEl = document.getElementById("console");
+
+function clearConsole() {
+  consoleEl.innerHTML = "";
+}
+
+function printLine(text, cls) {
+  const span = document.createElement("span");
+  span.className = cls ? "out-line " + cls : "out-line";
+  span.textContent = text;
+  consoleEl.appendChild(span);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function printBlock(text, cls) {
+  const lines = text.split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) printLine(line, cls);
+}
+
+/* ============================ Pyodide ============================ */
+
+const BURL_FILES = ["__init__.py", "errors.py", "lexer.py", "parser.py",
+  "values.py", "interpreter.py", "checker.py", "builtins.py"];
+
+// Where the package is mounted in the Pyodide filesystem. `import burl`
+// needs a parent directory on sys.path that contains burl/, hence
+// /lib/burl-src/burl/ (sys.path gets /lib/burl-src).
+const FS_PARENT = "/lib/burl-src";
+const FS_PACKAGE = "/lib/burl-src/burl";
+
+// Python helpers injected once Pyodide is up. They mirror the CLI exactly:
+// run_file() in burl/__main__.py and cmd_check() in burl/__main__.py.
+const PY_HELPERS = `
+import json, io, contextlib, traceback
+
+def _burl_run(code):
+    from burl.parser import parse
+    from burl.interpreter import Interpreter
+    from burl.errors import BurlError
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            interp = Interpreter()
+            interp.base_dir = "/lib/burl-src/burl"
+            interp.run(parse(code))
+        return json.dumps({"status": "ok", "message": None, "output": out.getvalue()})
+    except BurlError as err:
+        # str(err) is "Runtime error at line N: ..." / "Parse error ..." exactly like the CLI
+        return json.dumps({"status": "error", "message": "burl: " + str(err), "output": out.getvalue()})
+    except Exception:
+        return json.dumps({"status": "crash", "message": traceback.format_exc(limit=6),
+                           "output": out.getvalue()})
+
+def _burl_check(code):
+    from burl.checker import check_source
+    lines = []
+    errors = warnings = 0
+    for diag in check_source(code):
+        if diag.severity == "error":
+            errors += 1
+        else:
+            warnings += 1
+        lines.append("playground.burl:%d: %s: %s" % (diag.line, diag.severity, diag.message))
+    if not lines:
+        lines.append("playground.burl: ok")
+    lines.append("checked 1 file(s): %d error(s), %d warning(s)" % (errors, warnings))
+    return json.dumps({"lines": lines, "errors": errors, "warnings": warnings})
+`;
+
+const statusEl = document.getElementById("engine-status");
+const runBtn = document.getElementById("run-btn");
+const checkBtn = document.getElementById("check-btn");
+let pyodide = null;
+let runFn = null, checkFn = null;
+let initialized = false;
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls;
+}
+
+async function fetchBurlFile(name) {
+  // Primary: files deployed next to the page (docs/burl/*.py on GitHub Pages).
+  // Fallback: one level up (works with a few other deploy layouts).
+  const candidates = [new URL("burl/" + name, location.href),
+                      new URL("../burl/" + name, location.href)];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { cache: "no-cache" });
+      if (res.ok) return await res.text();
+    } catch (e) { /* try next candidate */ }
+  }
+  throw new Error("could not fetch burl/" + name + " (looked next to this page and one level up)");
+}
+
+async function initPyodide() {
+  try {
+    pyodide = await loadPyodide({
+      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.2/full/"
+    });
+    try { pyodide.FS.mkdirTree(FS_PACKAGE); } catch (e) { /* already exists */ }
+    for (const name of BURL_FILES) {
+      const text = await fetchBurlFile(name);
+      pyodide.FS.writeFile(FS_PACKAGE + "/" + name, text);
+    }
+    pyodide.runPython('import sys; sys.path.insert(0, "' + FS_PARENT + '"); import burl.checker');
+    pyodide.runPython(PY_HELPERS);
+    runFn = pyodide.globals.get("_burl_run");
+    checkFn = pyodide.globals.get("_burl_check");
+    initialized = true;
+    setStatus("ready — real interpreter in WebAssembly", "ready");
+    consoleEl.innerHTML = "";
+    printLine("burl 0.4.0 playground — press Run (Ctrl+Enter) to execute.", "out-sys");
+  } catch (err) {
+    setStatus("failed to load Pyodide — see console", "error");
+    consoleEl.innerHTML = "";
+    printLine("Failed to initialize the Pyodide runtime:", "out-err");
+    printLine(String(err && err.message || err), "out-err");
+    printLine("Check your network connection (Pyodide and the burl/ sources are fetched from the web).", "out-sys");
+  }
+  runBtn.disabled = !initialized;
+  checkBtn.disabled = !initialized;
+}
+
+function withBusy(btn, fn) {
+  return async function () {
+    if (!initialized || btn.classList.contains("busy")) return;
+    btn.classList.add("busy");
+    await new Promise(r => setTimeout(r, 30)); // let the spinner render before we block the main thread
+    try { await fn(); }
+    finally { btn.classList.remove("busy"); }
+  };
+}
+
+function doRun() {
+  clearConsole();
+  let result;
+  try {
+    result = JSON.parse(runFn(editor.getValue()));
+  } catch (err) {
+    printLine("burl: internal playground error: " + (err && err.message || err), "out-err");
+    return;
+  }
+  if (result.output) printBlock(result.output, "");
+  if (result.status === "error") printBlock(result.message, "out-err");
+  else if (result.status === "crash") printBlock("burl: internal error\n" + result.message, "out-err");
+}
+
+function doCheck() {
+  clearConsole();
+  let result;
+  try {
+    result = JSON.parse(checkFn(editor.getValue()));
+  } catch (err) {
+    printLine("burl: internal playground error: " + (err && err.message || err), "out-err");
+    return;
+  }
+  for (const line of result.lines) {
+    let cls = "";
+    if (/error:/.test(line)) cls = "out-err";
+    else if (/warning:/.test(line)) cls = "out-warn";
+    else if (line.indexOf("ok") !== -1 && line.indexOf("checked") === -1) cls = "out-ok";
+    printLine(line, cls);
+  }
+}
+
+/* ---------------------------- share ---------------------------- */
+
+const shareNote = document.getElementById("share-note");
+
+function doShare() {
+  const code = editor.getValue();
+  const hash = "#code=" + encodeURIComponent(code);
+  const url = location.href.split("#")[0] + hash;
+  history.replaceState(null, "", hash);
+  const finish = () => {
+    shareNote.style.visibility = "visible";
+    setTimeout(() => { shareNote.style.visibility = "hidden"; }, 2000);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(finish, () => fallbackCopy(url, finish));
+  } else {
+    fallbackCopy(url, finish);
+  }
+}
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (e) { /* clipboard unavailable */ }
+  document.body.removeChild(ta);
+  done();
+}
+
+/* ---------------------------- wiring ---------------------------- */
+
+runBtn.addEventListener("click", withBusy(runBtn, doRun));
+checkBtn.addEventListener("click", withBusy(checkBtn, doCheck));
+document.getElementById("clear-btn").addEventListener("click", clearConsole);
+document.getElementById("share-btn").addEventListener("click", doShare);
+
+document.getElementById("examples").addEventListener("change", function (e) {
+  const example = EXAMPLES[e.target.value];
+  if (typeof example === "string") editor.setValue(example);
+});
+
+/* ---------------------------- boot ---------------------------- */
+
+// Restore shared code from the URL hash, else load the default example.
+(function loadHash() {
+  const hash = location.hash;
+  if (hash.indexOf("#code=") === 0) {
+    try {
+      const code = decodeURIComponent(hash.slice(6));
+      if (code) { editor.setValue(code); return; }
+    } catch (e) { /* fall through to default example */ }
+  }
+  editor.setValue(EXAMPLES.hello);
+})();
+
+initPyodide();
+</script>
+</body>
+</html>
