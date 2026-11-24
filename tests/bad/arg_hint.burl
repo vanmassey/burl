@@ -1,0 +1,6 @@
+// bad: a typed parameter handed a string
+fn double(n : number) : number {
+    return n * 2
+}
+print(double("4"))
+// expect: wants 'number' for argument 1

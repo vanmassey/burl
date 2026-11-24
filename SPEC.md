@@ -264,3 +264,30 @@ saga.banner("RIDDLES OF THE NORTH")
 - Circularity is a loud error naming the whole chain:
   `Circular import: a.burl -> b.burl -> a.burl`.
 - Any file remains a runnable program. Modules are programs that export.
+
+## 12. Tooling: `burl check`
+
+The checker is part of the shipped tool, not part of the language. It reads
+a program, applies the hint vocabulary of section 8, and reports every
+problem it can *prove* from the source, with `file:line` prefixes:
+
+```
+burl check program.burl [more.burl ...]
+```
+
+- **Advisory, never load-bearing.** The checker is a lint, not a gate. The
+  interpreter's behavior is unchanged by its existence, and a clean check
+  promises nothing beyond what the language already does.
+- **No false positives.** The checker is silent on any program the
+  interpreter would run without error. When it cannot prove a claim, it
+  says nothing: unknown types stay unknown, and a name used before its
+  definition in the same file is not flagged (a closure may legitimately
+  see it by call time).
+- It reports, among others: unknown names, duplicate definitions, redefining
+  builtins at the top level, arity errors at call sites, calls of
+  non-callables, type mismatches wherever a hint meets a provable type
+  (initializers, assignments, arguments, returns), operands the arithmetic
+  and comparison operators reject, misplaced `break`/`continue`/`return`,
+  and unused `let` bindings (as warnings).
+- Exit code is 1 when errors are found, 0 otherwise; warnings never change
+  the exit code.

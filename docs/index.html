@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Burl — a small, compatible scripting language</title>
+<meta name="description" content="Burl is a small scripting language: simple like Linux, forward-minded like its author, and designed to be equally pleasant for humans and AI to write.">
+<style>
+  :root {
+    --ink: #1d2430; --muted: #5b6675; --paper: #faf9f6; --card: #ffffff;
+    --accent: #7a4d2b; --line: #e4e0d8; --code-bg: #f0eee8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink); background: var(--paper);
+    font: 17px/1.65 Georgia, "Times New Roman", serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+  h1 { font-size: 3rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.35rem; margin-top: 2.5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  .tagline { color: var(--muted); font-style: italic; font-size: 1.15rem; margin: 0 0 2rem; }
+  .badge { display: inline-block; font: .75rem/1.8 ui-monospace, monospace; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 0 .5rem; margin-bottom: 1rem; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 1rem 1.25rem; overflow-x: auto;
+    font: .86rem/1.55 ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  code { font: .95em ui-monospace, Consolas, monospace; background: var(--code-bg); padding: .1em .3em; border-radius: 3px; }
+  pre code { background: none; padding: 0; }
+  .kw { color: var(--accent); font-weight: bold; }
+  .str { color: #3a6b35; }
+  .num { color: #7a5ba8; }
+  .cmt { color: var(--muted); font-style: italic; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.2rem; }
+  li { margin: .35rem 0; }
+  footer { margin-top: 4rem; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  .navline { font: .85rem ui-monospace, monospace; color: var(--muted); margin-bottom: 2.5rem; }
+  .navline a { margin-right: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+  <p class="badge">v0.3.0 &mdash; &ldquo;Iron&rdquo;</p>
+  <h1>Burl</h1>
+  <p class="tagline">Simple like Linux, forward-minded like its author, and
+  equally pleasant for humans and AI to write.</p>
+
+  <nav class="navline">
+    <a href="https://github.com/vanmassey/burl">GitHub</a>
+    <a href="https://github.com/vanmassey/burl/blob/main/SPEC.md">Spec</a>
+    <a href="https://github.com/vanmassey/burl/blob/main/ROADMAP.md">Roadmap</a>
+    <a href="https://github.com/vanmassey/burl/blob/main/CHANGELOG.md">Changelog</a>
+  </nav>
+
+  <h2>What Burl is</h2>
+  <p>A small scripting language that fits in one file of specification and
+  one dependency-free package. One <code>number</code> type, dynamic values
+  with optional runtime-checked hints, brace syntax, loud errors with line
+  numbers. Nothing clever. Clever is what breaks in year three.</p>
+
+  <pre><code><span class="kw">fn</span> greet(name) {
+    <span class="kw">return</span> <span class="str">"Hello, {name}!"</span>
+}
+
+<span class="kw">for</span> name <span class="kw">in</span> [<span class="str">"Ada"</span>, <span class="str">"Grace"</span>, <span class="str">"Linus"</span>] {
+    print(greet(name))
+}
+
+<span class="cmt">// hints are optional; the checker reads them, nothing else changes</span>
+<span class="kw">fn</span> double(n : number) : number {
+    <span class="kw">return</span> n * <span class="num">2</span>
+}</code></pre>
+
+  <h2>Quick start</h2>
+  <pre><code>pip install .          <span class="cmt"># from a clone; no dependencies beyond Python 3.8+</span>
+burl examples/fib.burl      <span class="cmt"># run a program</span>
+burl check examples/fib.burl <span class="cmt"># check it first: unknown names, arity, hints</span>
+burl                        <span class="cmt"># REPL</span></code></pre>
+
+  <h2>Principles</h2>
+  <ul>
+    <li><strong>Compatible.</strong> From 1.0 onward, a correct program never
+    breaks and never changes meaning. The covenant in the spec is binding.</li>
+    <li><strong>Simple.</strong> One spec file, one stdlib of 30-odd honest
+    builtins, no magic.</li>
+    <li><strong>Loud.</strong> Every error names its line and its operation.
+    Misuse should fail at first use, not drift.</li>
+    <li><strong>For humans and machines.</strong> Grammar you can hold in
+    your head, hints a checker can read, interpolation <code>"n = {x}"</code>
+    instead of format archaeology.</li>
+  </ul>
+
+  <h2>Where it is going</h2>
+  <p>Burst the features, then freeze and shake. The current voyage:
+  a static checker (0.3, done), the interpreter rewritten in Burl itself
+  (0.4), a bytecode VM (0.5), standalone executables (0.6), a real standard
+  library (0.7), then a deliberately long release-candidate before 1.0
+  &mdash; &ldquo;Landfall&rdquo;. The <a
+  href="https://github.com/vanmassey/burl/blob/main/ROADMAP.md">roadmap</a>
+  is public and each version has a definition of done that CI can check.</p>
+
+  <footer>A <em>burl</em> is the rounded knot in wood &mdash; small, dense,
+  and prized for holding its shape. Code and docs: <a
+  href="https://github.com/vanmassey/burl">github.com/vanmassey/burl</a>.
+  MIT.</footer>
+</main>
+</body>
+</html>

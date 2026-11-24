@@ -1,0 +1,5 @@
+// bad: redefining a name in the same block (runtime: 'already defined')
+let x = 1
+let x = 2
+print(x)
+// expect: Name 'x' is already defined in this block

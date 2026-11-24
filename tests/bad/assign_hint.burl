@@ -1,0 +1,5 @@
+// bad: assignment violates the declared hint
+let name : string = "Ada"
+name = 42
+print(name)
+// expect: assigned a value of type 'number'

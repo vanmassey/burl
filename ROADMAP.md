@@ -20,7 +20,7 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
 |---------|-------|--------|
 | 0.1.0 | First light | ✅ released 2026-11-24 |
 | 0.2 | Stone (modules) | ✅ released 2026-11-24 |
-| 0.3 | Iron (the checker) | next |
+| 0.3 | Iron (the checker) | ✅ released 2026-11-24 |
 | 0.4 | **Bootstrap** (Burl in Burl) | |
 | 0.5 | Keel (bytecode VM) | |
 | 0.6 | Dragon (native code) | |
@@ -45,7 +45,7 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
   `slice`); module caching, circular-import errors, and every string tool
   are covered in `tests/test_modules.py`.
 
-## v0.3 — The static checker
+## v0.3 — The static checker  ✅ shipped
 
 *Theme: hints earn their keep before anything else is added.*
 
@@ -57,6 +57,11 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
 - **Done when:** the checker finds every planted type bug in a corpus of
   deliberately broken programs in `tests/bad/`, and `burl check` passes on
   all of `examples/`.
+- **Shipped as:** `burl/checker.py` + `burl check` in the CLI; 12 planted
+  bugs in `tests/bad/` all caught; checker runs over all of `examples/` in
+  CI on every push. SPEC.md 12 defines its advisory covenant: a lint, never
+  a gate, and silent whenever it cannot prove a claim. The one-page site
+  (docs/, served by GitHub Pages) came along for the ride.
 
 ## v0.4 — Bootstrap: the interpreter, rewritten in Burl
 

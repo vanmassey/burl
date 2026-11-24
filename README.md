@@ -18,7 +18,7 @@ for name in ["Ada", "Grace", "Linus"] {
 
 ```
 python -m burl examples/fib.burl      # run a program
-python -m burl examples/adventure.burl # play the tiny saga "Vinland"
+python -m burl check examples/fib.burl # check a program before running it
 python -m burl                         # start the REPL
 python -m unittest discover -s tests
 ```

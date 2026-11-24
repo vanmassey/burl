@@ -1,0 +1,4 @@
+// bad: redefining a builtin at the top level (runtime: 'already defined')
+let print = 1
+print(2)
+// expect: 'print' is a builtin

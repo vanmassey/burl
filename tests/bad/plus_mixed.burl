@@ -1,0 +1,4 @@
+// bad: mixing operand types that + rejects at runtime
+let n = 1 + "one"
+print(n)
+// expect: needs two strings or two numbers

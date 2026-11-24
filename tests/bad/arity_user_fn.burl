@@ -1,0 +1,6 @@
+// bad: a typed function called with the wrong arity
+fn add(a : number, b : number) : number {
+    return a + b
+}
+print(add(1, 2, 3))
+// expect: expects 2 argument(s), got 3

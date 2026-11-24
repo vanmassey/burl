@@ -7,6 +7,24 @@ without a two-major-version deprecation.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-11-24
+
+### Added
+
+- **The static checker** (SPEC.md 12, ROADMAP v0.3 "Iron"): `burl check
+  program.burl [more.burl ...]` reads the optional type hints of SPEC.md 8
+  and reports every problem provable from the source, with `file:line`
+  prefixes and multi-error output. Advisory, never load-bearing: no false
+  positives, the interpreter is unchanged.
+  - Catches: unknown names, duplicate definitions, redefining builtins at
+    the top level, arity errors, calls of non-callables, builtin argument
+    types, hint mismatches (initializers, assignments, arguments, returns),
+    operators given operands they reject, misplaced
+    `break`/`continue`/`return`; warns on unused `let` bindings.
+  - `tests/bad/`: a corpus of 12 planted-bug programs, each naming the
+    diagnostics it must earn.
+  - CI now runs the checker over all of `examples/` on every push.
+
 ## [0.2.0] - 2026-11-24
 
 ### Added

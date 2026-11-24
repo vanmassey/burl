@@ -1,0 +1,3 @@
+// bad: calling a name that is not defined anywhere
+print(greet("world"))
+// expect: Undefined name 'greet'

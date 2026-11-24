@@ -1,0 +1,4 @@
+// bad: initializer violates the declared hint
+let count : number = "ten"
+print(count)
+// expect: declared as 'number' but the initializer has type 'string'

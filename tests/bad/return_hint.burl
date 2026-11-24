@@ -1,0 +1,6 @@
+// bad: return value violates the declared return hint
+fn answer() : number {
+    return "forty-two"
+}
+print(answer())
+// expect: return as 'number' but this return has type 'string'

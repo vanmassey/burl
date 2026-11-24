@@ -1,0 +1,3 @@
+// bad: return at the top level (runtime: 'return' used outside of a function)
+return 42
+// expect: 'return' used outside of a function

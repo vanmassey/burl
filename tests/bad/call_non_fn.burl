@@ -1,0 +1,4 @@
+// bad: calling something that is not callable
+let x = 5
+print(x(x))
+// expect: Cannot call a value of type 'number'

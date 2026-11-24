@@ -1,6 +1,6 @@
 """Burl — a small scripting language. See SPEC.md for the language contract."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .errors import BurlError, BurlRuntimeError, LexError, ParseError
 from .interpreter import Interpreter
