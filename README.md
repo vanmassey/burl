@@ -1,8 +1,8 @@
 # Burl
 
-A small, compatible scripting language — simple like Linux, forward-minded
-like its author, and designed to be equally pleasant for humans and AI to
-write.
+A small, compatible scripting language — small enough to know by heart,
+forward-minded like its author, and designed to be equally pleasant for
+humans and AI to write.
 
 [Website](https://vanmassey.github.io/burl/) · [Spec](SPEC.md) ·
 [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
