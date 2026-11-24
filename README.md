@@ -72,7 +72,9 @@ print("Status: {ok and "ready" or "waiting"}")
 ```
 
 See [SPEC.md](SPEC.md) for the full language contract — grammar, semantics,
-the standard library, and the stability rules that make upgrades safe.
+the standard library, and the stability rules that make upgrades safe — and
+[ROADMAP.md](ROADMAP.md) for where the language is headed and what ships in
+each version.
 
 ## Layout
 
