@@ -106,22 +106,40 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
   package-usage conventions for sharing Burl source. Zero grammar changes —
   everything is values.
 
-## v1.0 — Landfall
+## v1.0 — Landfall, via a long release-candidate
 
-*Theme: the promise becomes law.*
+*Theme: the promise becomes law, and stays it.*
 
-The covenant in SPEC.md 1 activates. Gate checklist (all must hold):
+The kernel model: burst the features, then freeze and shake. Phases in order:
 
-- [ ] No known mismatch between SPEC.md and any implementation.
+**1.0-rc1 — feature freeze.** The grammar and the hint vocabulary are
+untouchable from here on. Entry ritual: the *full deficiency ledger* is
+filed and public — every known spec ambiguity, REPL papercut, error-message
+gap, and CI flake. `rc` length is defined by the ledger, never by a date;
+"long" is the default.
+
+**rc2 ... rcN — fixes and evidence only.**
+- Allowed: fixes, and additions to existing contracts (new builtins,
+  error-message improvements). Never grammar, never removals.
+- Each rc shrinks the ledger. A blocker extends rc; a non-blocker may be
+  tracked to 1.0.x (fixes and additions never break programs).
+- During rc the language is *lived in*, not left still: the examples are
+  exercised, real tools are written in Burl, the checker runs over the
+  whole corpus. A frozen grammar no one uses is evidence of nothing.
+
+**1.0 ships when every gate holds:**
+
+- [ ] Zero open release blockers on the ledger.
+- [ ] No spec grammar change since rc1 — the six-month stability window
+      (SPEC-adjacent, see 0.1's covenant) is satisfied by the rc's own
+      calendar as a side effect of living in it, not as a separate wait.
 - [ ] Bootstrap chain (0.4+) and native build (0.6+) green in CI.
-- [ ] Static checker reads the frozen hint vocabulary.
-- [ ] **Stability evidence:** the spec grammar has gone at least six months
-      without a change *while real programs were being written against it*
-      (the bootstrap, native build, and stdlib all count). The window runs
-      concurrently with 0.5-0.7 work — it is not an extra wait. If 0.4's
-      strain forces a language change, the window restarts; that is the
-      point of it.
+- [ ] Static checker clean on the whole corpus.
 - [ ] Full docs: spec, stdlib reference, tutorial, style guide.
+
+Discipline note, kept from the plan above: no promotion to 1.0 off rc3
+because enthusiasm peaks. Late fixes are cheap; post-1.0 grammar fixes
+cost a deprecation cycle forever.
 
 After 1.0: additions stay cheap; changes and removals need the
 deprecation cycle. A burl is the English word for a rounded knot in wood —
