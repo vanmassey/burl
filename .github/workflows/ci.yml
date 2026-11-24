@@ -13,8 +13,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.8", "3.12"]
+        # Python 3.8 has no build for Ubuntu 26.04 (current ubuntu-latest),
+        # so the 3.8 leg pins the older runner.
+        include:
+          - { os: ubuntu-22.04, python-version: "3.8" }
+          - { os: macos-latest, python-version: "3.8" }
+          - { os: windows-latest, python-version: "3.8" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: macos-latest, python-version: "3.12" }
+          - { os: windows-latest, python-version: "3.12" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
