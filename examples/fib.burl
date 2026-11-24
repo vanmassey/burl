@@ -1,0 +1,43 @@
+// Fibonacci three ways: recursion, iteration, and a closure with memory.
+
+fn fib_recursive(n) {
+    if n < 2 {
+        return n
+    }
+    return fib_recursive(n - 1) + fib_recursive(n - 2)
+}
+
+print("recursive: {fib_recursive(15)}")
+
+fn fib_iterative(n) {
+    let a = 0
+    let b = 1
+    for i in range(n) {
+        let next = a + b
+        a = b
+        b = next
+    }
+    return a
+}
+
+print("iterative: {fib_iterative(15)}")
+
+fn make_memo_fib() {
+    let cache = {}
+    fn fib(n) {
+        if n < 2 {
+            return n
+        }
+        let key = str(n)
+        if has(cache, key) {
+            return cache[key]
+        }
+        let result = fib(n - 1) + fib(n - 2)
+        cache[key] = result
+        return result
+    }
+    return fib
+}
+
+let fib = make_memo_fib()
+print("memoized:  {fib(50)}")

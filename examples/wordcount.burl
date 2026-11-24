@@ -1,0 +1,44 @@
+// A tiny (self-contained) word-frequency tally using maps, lists, and
+// functions as values.
+
+let text = "to be or not to be that is the question that is"
+let counts = {}
+
+fn count_word(word) {
+    if has(counts, word) {
+        counts[word] = counts[word] + 1
+    } else {
+        counts[word] = 1
+    }
+}
+
+for word in split(text, " ") {
+    count_word(word)
+}
+
+let words = keys(counts)
+
+// Sort by count, descending: simple selection sort keeps it dependency-free.
+let best = []
+let remaining = words
+while len(remaining) > 0 {
+    let champion = remaining[0]
+    for w in remaining {
+        if counts[w] > counts[champion] {
+            champion = w
+        }
+    }
+    push(best, champion)
+    let next = []
+    for w in remaining {
+        if w != champion {
+            push(next, w)
+        }
+    }
+    remaining = next
+}
+
+for i in range(min(5, len(best))) {
+    let word = best[i]
+    print("{word}: {counts[word]}")
+}
