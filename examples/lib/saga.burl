@@ -1,0 +1,29 @@
+// Shared helpers for the Burl examples (Vinland-flavored).
+// Loaded with:  let saga = import("lib/saga.burl")
+
+const WISDOM = [
+    "A slave is not the one who serves; it is the one who must.",
+    "You have no enemies. No one has any enemies.",
+    "Hate makes you a sword, and swords break."
+]
+
+// A framed banner title, on three lines.
+fn banner(title) {
+    let bar = ""
+    for i in range(len(title) + 8) {
+        bar = bar + "="
+    }
+    print(bar)
+    print("   " + title)
+    print(bar)
+}
+
+// One saying from the sagas, chosen by the dice.
+fn wisdom() {
+    return WISDOM[floor(random() * len(WISDOM))]
+}
+
+// Shout a word like a man calling across a fjord.
+fn shout(text) {
+    return upper(trim(text)) + "!"
+}

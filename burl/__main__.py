@@ -5,6 +5,7 @@ Usage:
   python -m burl           (REPL)
 """
 
+import os
 import sys
 
 from . import __version__
@@ -22,7 +23,11 @@ def run_file(path):
         print(f"burl: cannot open '{path}': {exc.strerror or exc}", file=sys.stderr)
         return 1
     try:
-        Interpreter().run(parse(source))
+        interp = Interpreter()
+        # import() resolves relative paths against the main file's directory,
+        # not the current working directory (SPEC.md 11).
+        interp.base_dir = os.path.dirname(os.path.abspath(path))
+        interp.run(parse(source))
     except BurlError as err:
         print(f"burl: {err}", file=sys.stderr)
         return 1

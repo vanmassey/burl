@@ -163,6 +163,58 @@ def bi_lower(args, line):
     return expect(args, line, "lower", 0, "string").lower()
 
 
+@_builtin("slice", 3)
+def bi_slice(args, line):
+    text = expect(args, line, "slice", 0, "string")
+    start = expect(args, line, "slice", 1, "number")
+    end = expect(args, line, "slice", 2, "number")
+    for bound, label in ((start, "start"), (end, "end")):
+        if isinstance(bound, bool) or bound != int(bound):
+            raise BurlRuntimeError(f"slice(): {label} must be a whole number", line)
+        if bound < 0 or bound > len(text):
+            raise BurlRuntimeError(
+                f"slice(): {label} {int(bound)} out of range (length {len(text)})", line)
+    if start > end:
+        raise BurlRuntimeError(
+            f"slice(): start {int(start)} is after end {int(end)}", line)
+    return text[int(start):int(end)]
+
+
+@_builtin("find", 2, 3)
+def bi_find(args, line):
+    text = expect(args, line, "find", 0, "string")
+    sub = expect(args, line, "find", 1, "string")
+    start = 0
+    if len(args) == 3:
+        start = expect(args, line, "find", 2, "number")
+        if isinstance(start, bool) or start != int(start) or start < 0:
+            raise BurlRuntimeError("find(): start must be a whole number >= 0", line)
+        start = int(start)
+    return text.find(sub, start)  # -1 when absent: absence is a value here
+
+
+@_builtin("contains", 2)
+def bi_contains(args, line):
+    text = expect(args, line, "contains", 0, "string")
+    sub = expect(args, line, "contains", 1, "string")
+    return sub in text
+
+
+@_builtin("replace", 3)
+def bi_replace(args, line):
+    text = expect(args, line, "replace", 0, "string")
+    old = expect(args, line, "replace", 1, "string")
+    new = expect(args, line, "replace", 2, "string")
+    if old == "":
+        raise BurlRuntimeError("replace(): search string must not be empty", line)
+    return text.replace(old, new)
+
+
+@_builtin("trim", 1)
+def bi_trim(args, line):
+    return expect(args, line, "trim", 0, "string").strip()
+
+
 @_builtin("str", 1)
 def bi_str(args, line):
     return format_value(args[0])

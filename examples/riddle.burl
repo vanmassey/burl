@@ -1,0 +1,100 @@
+// RIDDLES OF THE NORTH - a small game showing off Burl 0.2 modules.
+//
+// The sagas were riddles as often as battles. Answer three, one word each.
+// Run:  python -m burl examples/riddle.burl
+//
+// This is also the ship that tests Burl 0.2's modules: everything game
+// flavored (banner, wisdom, shouting) lives in lib/saga.burl, imported
+// below like any value.
+
+let saga = import("lib/saga.burl")
+
+let riddles = [
+    {
+        "q": "What has banks but no coin, a bed but never sleeps, a head but no brain?",
+        "answers": ["river"]
+    },
+    {
+        "q": "What is always coming, but never arrives?",
+        "answers": ["tomorrow"]
+    },
+    {
+        "q": "What can cross the whole sea without sail or oar, and arrives before the ship?",
+        "answers": ["word", "a word", "news", "rumor", "rumour"]
+    }
+]
+
+// Ask one riddle. Returns true (solved), nil (skipped/failed) or "quit".
+fn ask(riddle) {
+    let tries = 0
+    while tries < 2 {
+        let guess = input("> ")
+        if guess == nil {
+            return "quit"
+        }
+        let answer = lower(trim(guess))
+        if answer == "" {
+            print("Silence is not an answer.")
+            tries = tries + 1
+            continue
+        }
+        if answer == "quit" {
+            return "quit"
+        }
+        if answer == "skip" {
+            print("A wise rower knows which waves to take.")
+            return nil
+        }
+        if answer == "hint" {
+            print("It begins with: " + slice(riddle.answers[0], 0, 1))
+            continue
+        }
+        let solved = false
+        for accepted in riddle.answers {
+            if answer == accepted {
+                solved = true
+            }
+        }
+        if solved {
+            print("Correct. The skald nods.")
+            return true
+        }
+        tries = tries + 1
+        if tries < 2 {
+            print("No. One more try, or 'hint', or 'skip'.")
+        }
+    }
+    print("The fjord keeps its silence. The answer was: {riddle.answers[0]}")
+    return nil
+}
+
+// ---- the game ------------------------------------------------------------
+
+saga.banner("RIDDLES OF THE NORTH")
+print("Answer three riddles, one word each.")
+print("Say 'hint' to peek, 'skip' to move on, 'quit' to drop the oars.")
+
+let score = 0
+let quit = false
+for riddle in riddles {
+    let outcome = ask(riddle)
+    if outcome == "quit" {
+        quit = true
+    } else if outcome == true {
+        score = score + 1
+    }
+    if quit {
+        break
+    }
+}
+
+print("")
+if score == len(riddles) {
+    saga.banner("SKALD - A CUP FOR YOU, ALL THREE ANSWERED")
+} else if score > 0 {
+    print("Score: {score} of {len(riddles)}. The hall drinks to you anyway.")
+} else {
+    print("Score: {score} of {len(riddles)}. Row harder; riddles are honest work.")
+}
+print("")
+print("One last thing, before you row away: {saga.wisdom()}")

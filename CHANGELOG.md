@@ -7,7 +7,22 @@ without a two-major-version deprecation.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-24
+
+### Added
+
+- `examples/adventure.burl` — "Vinland", a small text adventure exercising
+  maps, closures, interpolation, and `input` (added between 0.1.0 and this
+  release, covered by tests).
+- **Modules** (SPEC.md 11): `import(path)` loads another Burl file and
+  returns a map of its `fn` and `const` declarations. Relative paths resolve
+  against the main program's directory. Modules run once; repeated imports
+  return the same map; circular imports are loud errors naming the chain;
+  plain `let` bindings stay private to the module.
+- String tools: `slice(s, start, end)`, `find(s, sub[, start])` (returns -1
+  when absent), `contains(s, sub)`, `replace(s, old, new)`, `trim(s)`.
+- New example `examples/riddle.burl` (with the shared module
+  `examples/lib/saga.burl`) exercising imports, `input`, string tools.
 
 ### Changed
 
@@ -16,11 +31,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of input are unaffected.
 - Map literals may span lines (previously only map literals fully contained
   on one line parsed).
-
-### Added
-
-- `examples/adventure.burl` — "Vinland", a small text adventure that
-  exercises maps, closures, string interpolation, and `input`.
 
 ## [0.1.0] - 2026-11-24
 

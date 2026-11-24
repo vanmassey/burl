@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "burl-lang"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small, compatible scripting language - simple like Linux, forward-minded, easy for humans and AI"
 readme = "README.md"
 requires-python = ">=3.8"

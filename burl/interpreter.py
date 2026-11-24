@@ -5,11 +5,14 @@ Values map to Python values directly:
   list -> list, map -> dict, fn -> BurlFunction | Builtin.
 """
 
+import os
+
 from .builtins import Builtin
-from .errors import BurlRuntimeError
+from .errors import BurlError, BurlRuntimeError
+from .lexer import lex
 from .parser import (Assign, Binop, Block, Bool, Break, Call, Continue, ExprStmt,
                      FnDecl, FnExpr, For, If, Index, ListLit, MapLit, Member, Neg,
-                     Nil, Not, Num, Program, Return, Str, Var, While, Let)
+                     Nil, Not, Num, Program, Return, Str, Var, While, Let, parse)
 from .values import (NUMERIC, BurlFunction, check_hint, format_value, is_equal,
                      satisfies, truthy, type_name)
 
@@ -86,6 +89,13 @@ class Interpreter:
     def __init__(self, builtins_env=None):
         from .builtins import global_env  # local import avoids a cycle
         self.globals = builtins_env if builtins_env is not None else global_env()
+        # Module system (SPEC.md 11): the directory relative paths in
+        # import() resolve against; set by the runner to the main file's dir.
+        self.base_dir = os.getcwd()
+        self._modules = {}   # resolved path -> exported map
+        self._loading = []   # resolved paths currently loading (circular detection)
+        self._loading_as = []  # the paths as the user wrote them, for messages
+        self.globals.define("import", self._make_import_builtin(), 0)
         self._exec_map = {
             Let: self.exec_let, FnDecl: self.exec_fn_decl, If: self.exec_if,
             While: self.exec_while, For: self.exec_for, Return: self.exec_return,
@@ -133,6 +143,59 @@ class Interpreter:
             raise BurlRuntimeError("'break' used outside of a loop", program.line) from None
         except _ContinueSignal:
             raise BurlRuntimeError("'continue' used outside of a loop", program.line) from None
+
+    # ---- modules (SPEC.md 11) ----------------------------------------------
+
+    def _make_import_builtin(self):
+        def do_import(args, line):
+            path = args[0]
+            if not isinstance(path, str):
+                raise BurlRuntimeError(
+                    f"import(): argument must be a string path, got {type_name(path)}", line)
+            resolved = os.path.normpath(os.path.join(self.base_dir, path))
+            if resolved in self._modules:
+                return self._modules[resolved]
+            if resolved in self._loading:
+                chain = " -> ".join(self._loading_as + [path])
+                raise BurlRuntimeError(f"Circular import: {chain}", line)
+            self._loading.append(resolved)
+            self._loading_as.append(path)
+            try:
+                return self._load_module(path, resolved, line)
+            finally:
+                self._loading.pop()
+                self._loading_as.pop()
+        return Builtin("import", do_import, 1)
+
+    def _load_module(self, path, resolved, line):
+        try:
+            with open(resolved, "r", encoding="utf-8") as handle:
+                source = handle.read()
+        except OSError as exc:
+            raise BurlRuntimeError(
+                f"import(): cannot read '{path}': {exc.strerror or exc}", line) from None
+        try:
+            program = parse(source)
+            module_env = Env(self.globals)
+            self.exec_stmts(program.stmts, module_env)
+        except BurlError as err:
+            eof_kwargs = {"eof": True} if getattr(err, "eof", False) else {}
+            raise type(err)(f"'{path}': {err.message}", err.line, **eof_kwargs) from None
+        except _ReturnSignal:
+            raise BurlRuntimeError("'return' used outside of a function", line) from None
+        except _BreakSignal:
+            raise BurlRuntimeError("'break' used outside of a loop", line) from None
+        except _ContinueSignal:
+            raise BurlRuntimeError("'continue' used outside of a loop", line) from None
+        # A module exports its fn and const declarations (SPEC.md 11). Plain
+        # let bindings stay private: module functions still see them via
+        # their closure, importers do not.
+        exports = {}
+        for name, (value, const, _hint) in module_env.values.items():
+            if const or isinstance(value, BurlFunction):
+                exports[name] = value
+        self._modules[resolved] = exports
+        return exports
 
     # ---- statements ---------------------------------------------------------
 

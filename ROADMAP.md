@@ -19,15 +19,15 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
 | Version | Theme | Status |
 |---------|-------|--------|
 | 0.1.0 | First light | ✅ released 2026-11-24 |
-| 0.2 | Stone (modules) | next |
-| 0.3 | Iron (the checker) | |
+| 0.2 | Stone (modules) | ✅ released 2026-11-24 |
+| 0.3 | Iron (the checker) | next |
 | 0.4 | **Bootstrap** (Burl in Burl) | |
 | 0.5 | Keel (bytecode VM) | |
 | 0.6 | Dragon (native code) | |
 | 0.7 | Provisions (std library) | |
 | 1.0 | Landfall (the covenant) | the destination |
 
-## v0.2 — Modules as values
+## v0.2 — Modules as values  ✅ shipped
 
 *Theme: programs bigger than one file.*
 
@@ -35,13 +35,15 @@ done that CI (or you, in a terminal) can check — no vibes-based shipping.
   top scope, returns a map of its `fn`/`const` declarations. No import
   statements, no module syntax — imports are ordinary declarations,
   exactly as SPEC.md 11 promised.
-- File loading errors follow the language's existing honesty: `nil`-free,
-  loud `Runtime error` with the path and line.
-- String tools the lexer-writer immediately needs (and users asked in
-  spirit): `slice(s, start, end)`, `find(s, sub, start?)`, `contains`,
-  `replace`, `trim`. Each is one honest builtin, not a micro-API.
-- **Done when:** the adventure and fib examples load a shared `examples/lib/*.burl`
-  module and still pass; a circular import is a loud error.
+- File loading errors follow the language's existing honesty: loud
+  `Runtime error` with the path and line.
+- String tools the lexer-writer immediately needs: `slice(s, start, end)`,
+  `find(s, sub, start?)`, `contains`, `replace`, `trim`. Each is one
+  honest builtin, not a micro-API.
+- **Shipped as:** `examples/riddle.burl` + shared module
+  `examples/lib/saga.burl` exercise the whole feature (with `hint` using
+  `slice`); module caching, circular-import errors, and every string tool
+  are covered in `tests/test_modules.py`.
 
 ## v0.3 — The static checker
 

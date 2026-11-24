@@ -218,7 +218,7 @@ the contract until static checking exists; it never silently changes.
 
 ## 9. Standard library (lean core)
 
-Builtins are plain global values. ~24 of them:
+Builtins are plain global values (~30 of them):
 
 | Category | Functions |
 |----------|-----------|
@@ -226,9 +226,9 @@ Builtins are plain global values. ~24 of them:
 | Length / type | `len(v)` `type(v)` |
 | Lists | `push(list, v)` `pop(list)` `range(a[, b[, step]])` `join(list, sep)` |
 | Maps | `keys(map)` `values(map)` `has(map, key)` |
-| Strings | `split(s, sep)` `upper(s)` `lower(s)` `str(v)` |
+| Strings | `split(s, sep)` `upper(s)` `lower(s)` `str(v)` `slice(s, start, end)` `find(s, sub[, start])` `contains(s, sub)` `replace(s, old, new)` `trim(s)` |
 | Numbers | `num(v)` `int(n)` `abs(n)` `min(...)` `max(...)` `floor(n)` `round(n)` `random()` |
-| Files / time | `read(path)` `write(path, text)` `clock()` |
+| Files / time / modules | `read(path)` `write(path, text)` `clock()` `import(path)` |
 
 Notes: `push` returns the list (so it chains); `pop` errors on empty;
 `range(a, b, step)` needs a positive step; `num("12.5")` is `12.5`,
@@ -242,8 +242,25 @@ the offending operation. Misuse is loud on purpose: fewer `nil`-sneaking
 bugs, better messages for both humans and AI. Parse errors stop the
 program before the first statement runs (no half-run).
 
-## 11. Modules (post-1.0 direction, not in v0)
+## 11. Modules
 
-Builtins are values; the module system will be, too. Files will load as
-values, imports will be ordinary declarations, and nothing in v0's grammar
-will need to change to make that happen.
+Builtins are values; modules are, too. There is no import statement and no
+module syntax — loading a module is calling a function:
+
+```
+let saga = import("lib/saga.burl")
+saga.banner("RIDDLES OF THE NORTH")
+```
+
+- `import(path)` loads the file (relative paths resolve against the *main
+  program's* directory, not the working directory), runs its top level in a
+  fresh scope whose parent is the global scope, and returns a map.
+- The map contains the module's `fn` and `const` declarations. Functions
+  stay live: they close over the module scope. Plain `let` bindings stay
+  private — module functions can mutate them (counters, caches); importers
+  only see what was deliberately exported.
+- A module's top-level code runs exactly once. `import` returns the *same*
+  exported map on repeated imports of the same file.
+- Circularity is a loud error naming the whole chain:
+  `Circular import: a.burl -> b.burl -> a.burl`.
+- Any file remains a runnable program. Modules are programs that export.
