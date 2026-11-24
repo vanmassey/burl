@@ -1,0 +1,232 @@
+// VINLAND - a very small text adventure, written in Burl.
+//
+// Bjorn's journey, compressed: gather what a journey needs
+// (a blade, a letter, a crew), then cross the sea.
+//
+// Run it:  python -m burl examples/adventure.burl
+// Quit:    the command 'quit', or Ctrl+C.
+
+// ---- the world ----------------------------------------------------------
+
+let rooms = {
+    "shore":   {
+        "name": "Rocky Shore",
+        "desc": "Grey sea, black rocks. Your father's farm lies far behind you. The sea does not care.",
+        "exits": { "north": "village", "east": "wreck" }
+    },
+    "wreck":   {
+        "name": "Beached Longship",
+        "desc": "A broken keel, salt-bleached shields, a rower's bench split by frost. An old sword lies among the wreckage.",
+        "item": "sword",
+        "exits": { "west": "shore" }
+    },
+    "village": {
+        "name": "Fishing Village",
+        "desc": "Smoke rises from turf roofs. Drying racks reek of herring; dogs argue over a fish head.",
+        "exits": { "south": "shore", "west": "tavern", "north": "camp", "east": "harbor" }
+    },
+    "tavern":  {
+        "name": "The Low Bench",
+        "desc": "Rushlights, spilled ale, corners of shadow. A broad old sailor plays dice alone against the gods: Leif.",
+        "exits": { "east": "village" }
+    },
+    "camp":    {
+        "name": "Sternbeard's Camp",
+        "desc": "Rough tents, whetstones, men lounging like wolves at noon. The jarl Sternbeard watches you the way a man weighs meat.",
+        "exits": { "south": "village" }
+    },
+    "harbor":  {
+        "name": "The Harbor",
+        "desc": "A knarr rides at anchor. Its master spits into the water and waits for cargo, or for a reason.",
+        "exits": { "west": "village", "east": "vinland" }
+    },
+    "vinland": {
+        "name": "The Crossing",
+        "desc": "",
+        "exits": {}
+    }
+}
+
+let player = {
+    "room": "shore",
+    "items": [],
+    "crew": false,
+    "letter": false
+}
+
+let short_dirs = { "n": "north", "s": "south", "e": "east", "w": "west" }
+
+// ---- helpers -------------------------------------------------------------
+
+fn has_item(name) {
+    for item in player.items {
+        if item == name {
+            return true
+        }
+    }
+    return false
+}
+
+fn here() {
+    return rooms[player.room]
+}
+
+fn describe() {
+    let spot = here()
+    print("")
+    print("== {spot.name} ==")
+    if player.room != "vinland" {
+        print(spot.desc)
+        if has(spot, "item") and spot.item != nil {
+            print("Something catches your eye: a {spot.item}.")
+        }
+        print("Exits: {join(keys(spot.exits), ", ")}")
+    }
+}
+
+// ---- actions ---------------------------------------------------------------
+
+fn go(direction) {
+    let spot = here()
+    if not has(spot.exits, direction) {
+        print("You cannot go {direction} from here.")
+        return
+    }
+    let next = spot.exits[direction]
+    if next == "vinland" and not (player.crew and player.letter) {
+        print("The master of the knarr folds his arms. \"No letter, no crew, no crossing.\"")
+        return
+    }
+    player.room = next
+    describe()
+    if next == "vinland" {
+        print("")
+        print("The oars bite. The coast of Iceland thins to a smudge of grey,")
+        print("then nothing at all. Leif laughs; Sternbeard does not.")
+        print("")
+        print("A thousand miles of cold water later, a new coast rises -")
+        print("forests, meadows, a wide unharvested land.")
+        print("")
+        print("VINLAND. You have no enemies in a world this big. You win.")
+        return "done"
+    }
+    return nil
+}
+
+fn talk() {
+    if player.room == "tavern" {
+        if player.crew {
+            print("Leif: \"The ale is done. Meet me at the harbor when you are ready.\"")
+        } else {
+            print("Leif Erikson squints at you across the dice.")
+            print("\"Vinland, is it? Twenty years ago I saw its coasts.\" He gathers the dice.")
+            print("\"A good ship needs a good crew. You have one now.\"")
+            player.crew = true
+        }
+    } else if player.room == "camp" {
+        if has_item("sword") {
+            if player.letter {
+                print("Sternbeard: \"Still here? The sea won't wait for your grudges.\"")
+            } else {
+                print("Sternbeard looks at the sword on your back and laughs.")
+                print("\"A farm boy with a dead man's iron. Good. Sentiment is heavy;")
+                print("you will need something lighter to cross an ocean.\"")
+                print("\"Take this: a king's letter of safe passage. Even dreams need permission.\"")
+                push(player.items, "letter")
+                player.letter = true
+            }
+        } else {
+            print("Sternbeard: \"Come back when you can defend something. Anything.\"")
+        }
+    } else {
+        print("There is no one here worth talking to.")
+    }
+}
+
+fn take() {
+    let spot = here()
+    if has(spot, "item") and spot.item != nil {
+        push(player.items, spot.item)
+        print("You take the {spot.item}.")
+        spot.item = nil
+    } else {
+        print("Nothing here worth taking.")
+    }
+}
+
+fn show_inventory() {
+    if len(player.items) == 0 {
+        print("You carry nothing but the cold.")
+    } else {
+        print("You carry: {join(player.items, ", ")}")
+    }
+}
+
+fn help() {
+    print("Commands:")
+    print("  look                - see the place again")
+    print("  go/n/s/e/w <place>  - travel (for example: 'go north' or just 'n')")
+    print("  take                - pick up what is here")
+    print("  talk                - speak to whoever is here")
+    print("  inventory           - check what you carry")
+    print("  help                - this list")
+    print("  quit                - give up and farm turnips")
+}
+
+// ---- the game loop ------------------------------------------------------
+
+print("V I N L A N D")
+print("A very small saga. You are Bjorn, and you are done being a soldier.")
+help()
+
+describe()
+
+let running = true
+while running {
+    let line = input("> ")
+    if line == nil {
+        break  // end of input: the tide takes us
+    }
+    let words = split(lower(line), " ")
+    if len(words) == 0 or words[0] == "" {
+        continue
+    }
+    let cmd = words[0]
+    let arg = ""
+    if len(words) > 1 {
+        arg = words[1]
+    }
+    if has(short_dirs, cmd) {
+        cmd = short_dirs[cmd]
+    }
+
+    let outcome = nil
+    if cmd == "quit" {
+        print("The saga ends quietly. Maybe next winter.")
+        running = false
+    } else if cmd == "help" {
+        help()
+    } else if cmd == "look" {
+        describe()
+    } else if cmd == "inventory" {
+        show_inventory()
+    } else if cmd == "take" {
+        take()
+    } else if cmd == "talk" {
+        talk()
+    } else if cmd == "go" {
+        if arg == "" {
+            print("Go where? Try 'go north'.")
+        } else {
+            outcome = go(arg)
+        }
+    } else if cmd == "north" or cmd == "south" or cmd == "east" or cmd == "west" {
+        outcome = go(cmd)
+    } else {
+        print("You do not know how to '{cmd}'. (Try 'help'.)")
+    }
+
+    if outcome == "done" {
+        running = false
+    }
+}

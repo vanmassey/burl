@@ -13,7 +13,10 @@ import burl
 def run_burl(source, stdin_lines=None):
     """Run Burl source, returning its stdout text."""
     out = io.StringIO()
-    stdin = io.StringIO("\n".join(stdin_lines or []) + "\n")
+    if stdin_lines is None:
+        stdin = io.StringIO("")
+    else:
+        stdin = io.StringIO("\n".join(stdin_lines) + "\n")
     with contextlib.redirect_stdout(out), mock.patch("sys.stdin", stdin):
         burl.run(source)
     return out.getvalue()
@@ -243,6 +246,32 @@ class ErrorReportingTests(unittest.TestCase):
     def test_parse_error_nonassociative_compare(self):
         message = run_fails("print(1 < 2 < 3)")
         self.assertIn("a < b and b < c", message)
+
+
+class EvergreenExampleTests(unittest.TestCase):
+    """The examples are load-bearing: they run on the shipping path."""
+
+    def _run_example(self, name, stdin_lines=None):
+        path = os.path.join(os.path.dirname(__file__), "..", "examples", name)
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        return run_burl(source, stdin_lines)
+
+    def test_adventure_win_path(self):
+        out = self._run_example(
+            "adventure.burl",
+            ["e", "take", "w", "n", "n", "talk", "s", "w", "talk", "e", "e", "e"])
+        self.assertIn("You win", out)
+        self.assertIn("The Crossing", out)
+
+    def test_adventure_gates_the_crossing(self):
+        # Try the crossing without blade, letter or crew: it must refuse.
+        out = self._run_example("adventure.burl", ["n", "e", "e", "quit"])
+        self.assertIn("No letter, no crew, no crossing", out)
+
+    def test_input_returns_nil_at_eof(self):
+        out = run_burl("print(input() == nil)")
+        self.assertIn("true", out)
 
 
 if __name__ == "__main__":

@@ -58,7 +58,13 @@ def bi_print(args, line):
 @_builtin("input", 0, 1)
 def bi_input(args, line):
     prompt = format_value(args[0]) if args else ""
-    return input(prompt)
+    try:
+        text = input(prompt)
+    except EOFError:
+        return None  # end of input; callers check for nil (SPEC.md 9)
+    except KeyboardInterrupt:
+        raise BurlRuntimeError("Interrupted", line) from None
+    return text
 
 
 # ---- length / type ----------------------------------------------------------

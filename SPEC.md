@@ -222,7 +222,7 @@ Builtins are plain global values. ~24 of them:
 
 | Category | Functions |
 |----------|-----------|
-| Output / input | `print(...)` `input([prompt])` |
+| Output / input | `print(...)` `input([prompt])` — `input` returns the line as a string, or `nil` at end of input |
 | Length / type | `len(v)` `type(v)` |
 | Lists | `push(list, v)` `pop(list)` `range(a[, b[, step]])` `join(list, sep)` |
 | Maps | `keys(map)` `values(map)` `has(map, key)` |

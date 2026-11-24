@@ -7,6 +7,21 @@ without a two-major-version deprecation.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- `input()` now returns `nil` at end of input (previously, programs reading a
+  closed stdin looped forever on empty strings). Callers that never reach end
+  of input are unaffected.
+- Map literals may span lines (previously only map literals fully contained
+  on one line parsed).
+
+### Added
+
+- `examples/adventure.burl` — "Vinland", a small text adventure that
+  exercises maps, closures, string interpolation, and `input`.
+
 ## [0.1.0] - 2026-11-24
 
 First public release. Everything below is "Added" by definition.

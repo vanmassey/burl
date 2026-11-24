@@ -501,15 +501,18 @@ class Parser:
 
     def map_lit(self, tok):
         items = []
-        while not self.check("}"):
+        while True:
+            self.skip_nl()
+            if self.check("}"):
+                break
             key = self.expect("STR", "a string key for the map")
             if len(key.value) != 1 or key.value[0][0] != "lit":
                 raise ParseError("Map keys must be plain strings (no interpolation)", key.line)
             self.expect(":", "':' after the key")
             items.append((key.value[0][1], self.expression()))
+            self.skip_nl()
             if not self.match(","):
                 break
-            self.skip_nl()
         self.expect("}")
         return MapLit(tok.line, items)
 
