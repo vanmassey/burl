@@ -22,7 +22,14 @@ python -m burl                     # start the REPL
 python -m unittest discover -s tests
 ```
 
-No dependencies beyond Python 3.8+.
+No dependencies beyond Python 3.8+. Or install it as a command:
+
+```
+pip install burl-lang    # when published to PyPI (or: pip install . from a clone)
+burl examples/fib.burl
+```
+
+[![CI](https://github.com/vanmassey/burl/actions/workflows/ci.yml/badge.svg)](https://github.com/vanmassey/burl/actions/workflows/ci.yml)
 
 ## The five commitments
 

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "burl-lang"
+version = "0.1.0"
+description = "A small, compatible scripting language - simple like Linux, forward-minded, easy for humans and AI"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Max Van Massey" }]
+keywords = ["language", "interpreter", "scripting"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Interpreters",
+]
+
+[project.urls]
+Homepage = "https://github.com/vanmassey/burl"
+Repository = "https://github.com/vanmassey/burl"
+
+[project.scripts]
+burl = "burl.__main__:main"
+
+[tool.setuptools]
+packages = ["burl"]

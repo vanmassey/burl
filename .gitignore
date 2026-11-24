@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .vibe/
+.venv*/
+build/
+*.egg-info/
