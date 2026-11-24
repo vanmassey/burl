@@ -115,7 +115,12 @@ The covenant in SPEC.md 1 activates. Gate checklist (all must hold):
 - [ ] No known mismatch between SPEC.md and any implementation.
 - [ ] Bootstrap chain (0.4+) and native build (0.6+) green in CI.
 - [ ] Static checker reads the frozen hint vocabulary.
-- [ ] At least six months without a spec grammar change.
+- [ ] **Stability evidence:** the spec grammar has gone at least six months
+      without a change *while real programs were being written against it*
+      (the bootstrap, native build, and stdlib all count). The window runs
+      concurrently with 0.5-0.7 work — it is not an extra wait. If 0.4's
+      strain forces a language change, the window restarts; that is the
+      point of it.
 - [ ] Full docs: spec, stdlib reference, tutorial, style guide.
 
 After 1.0: additions stay cheap; changes and removals need the
