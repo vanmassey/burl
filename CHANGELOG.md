@@ -7,6 +7,34 @@ without a two-major-version deprecation.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — toward 0.5.0 "Keel"
+
+### Changed
+
+- **SPEC.md 5.1 amended (LEDGER L-009, the release blocker resolved):**
+  the language honors the engine's existing arithmetic, and the spec now
+  documents it. One number type, two forms: integer literals are exact at
+  any magnitude (`+ - * %` on integers compute exactly, e.g.
+  `9007199254740993 * 2` is `18014398509481986`); a double result is a
+  64-bit IEEE 754 float, contagious to later arithmetic, and `/` is
+  always double. No program changes behavior — the covenant-safe direction:
+  the spec was brought to the engine, never the reverse. The boundary is
+  pinned by `tests/test_numbers.py` and a differential snippet in the
+  bootstrap corpus, so the 0.5 VM can be diffed against an agreed
+  semantics. README "Known limits" updated to match.
+- Whole-valued doubles print as their exact integer at any magnitude
+  (`values.py`): `print(18014398509481984.0)` was
+  `1.8014398509481984e+16`, now `18014398509481984`, matching the amended
+  printing rule "integer-valued values of either form print without a
+  decimal point". Display-only change; the underlying double is
+  unchanged.
+
+### Added
+
+- `tests/test_numbers.py`: the SPEC.md 5.1 number contract as tests —
+  integer exactness, double contagion, cross-form comparison exactness,
+  `int()` truncation, and the `number` hint accepting both forms.
+
 ## [0.4.0] - 2026-11-24
 
 ### Added

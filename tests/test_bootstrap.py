@@ -50,6 +50,8 @@ SLOW_ENV = "BURL_SLOW_TESTS"
 SNIPPETS = [
     # arithmetic, precedence, unary, float formatting
     "print(1 + 2 * 3)\nprint((1 + 2) * 3)\nprint(7 / 2)\nprint(-5 + 2)\nprint(10 % 3)\nprint(2.5 + 0.5)\nprint(1 == 1.0)\n",
+    # exact integers vs double contamination (SPEC.md 5.1, LEDGER L-009)
+    'print(9007199254740993 * 2)\nprint(9007199254740992 + 1.0)\nprint(9007199254740993 == 9007199254740992.0)\nprint(int(9007199254740992.5))\nprint(num("9007199254740993") * 2)\n',
     # strings + interpolation
     'let n = 3\nprint("n is \\{n\\} and \\{n * 2\\}")\nprint("a" + "b")\nprint(len("hello"))\nprint(upper("abc") + lower("DEF"))\n',
     # functions, recursion, hints

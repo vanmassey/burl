@@ -89,7 +89,9 @@ def format_number(value):
         return "nan"
     if value in (float("inf"), float("-inf")):
         return "inf" if value > 0 else "-inf"
-    if value.is_integer() and abs(value) < 1e16:
+    if value.is_integer():
+        # A whole-valued double prints as itself, at any magnitude
+        # (SPEC.md 5.1): exact, and the text reads back to the same double.
         return str(int(value))
     return repr(value)
 

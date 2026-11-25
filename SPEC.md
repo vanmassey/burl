@@ -44,7 +44,7 @@ Burl is a small, general-purpose scripting language with five commitments:
 | Keywords  | `and or not let const fn if else while for in return break continue true false nil` |
 | Operators | `+ - * / % == != < <= > >= = ( ) { } [ ] , . :`                  |
 | Strings   | Double-quoted, `"..."`, escapes `\n \t \r \\ \" \{` and `\}`. `{expr}` inside a string is interpolated (§7). |
-| Numbers   | `[0-9]+(\.[0-9]+)?` with optional leading `-` handled as unary minus. One number type: 64-bit IEEE 754 (§5.1). |
+| Numbers   | `[0-9]+(\.[0-9]+)?` with optional leading `-` handled as unary minus. One number type: exact integers, 64-bit IEEE 754 doubles (§5.1). |
 
 A number's printed form is the shortest exact representation: `3` not `3.0`.
 
@@ -108,12 +108,31 @@ silent `(a < b) < c`. `a < b and b < c` is the way, and it's clearer.
 
 ### 5.1 number
 
-One number type, 64-bit IEEE 754, like Lua and JavaScript. Integer-valued
-numbers print without a decimal point. Consequences, by design:
+One number type with two forms.
+
+- An **integer** — a literal without a decimal point (`42`) — is exact at
+  any magnitude: `+ - * %` on integers compute exactly, so
+  `9007199254740993 * 2` is `18014398509481986`.
+- A **double** — a literal with a decimal point (`1.0`) — is a 64-bit IEEE
+  754 float, like Lua and JavaScript. The double form is contagious: any
+  arithmetic operation with a double operand produces a double, and `/`
+  always produces a double. Doubles have finite precision: arithmetic on
+  double values past 2^53 loses integer precision exactly as JavaScript
+  and Lua lose it.
+- Both forms are `number`: integer-valued values of either form print
+  without a decimal point, and a comparison between the forms is exact
+  numeric comparison, never a side-dependent rounding (`1 == 1.0` is
+  true).
+- `int(n)` truncates toward zero when you truly need an integer op.
+
+Consequences, by design:
 
 - `3 / 2` is `1.5`. There is no surprise division.
-- Counters up to 2^53 are exact — far beyond a human's patience.
-- `int(n)` truncates toward zero when you truly need an integer op.
+- Counting in integers is exact as far as the count can go — far beyond a
+  human's patience. Rounding exists only in the double form, and once a
+  value becomes a double, the arithmetic after it lives in doubles: a
+  program that needs exact arithmetic need only keep float values and
+  `/` out of its loop.
 
 ### 5.2 bool, nil
 

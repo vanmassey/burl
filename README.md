@@ -58,7 +58,7 @@ installed package, and runs `burl check` over every example.
 ## Language in 60 seconds
 
 ```burl
-// Values: nil, bool, number (one 64-bit float), string, list, map, fn
+// Values: nil, bool, number (exact ints, 64-bit doubles), string, list, map, fn
 let name = "world"           // mutable
 const pi = 3.14159           // immutable
 let counts: map = { "a": 1 } // optional type hints, runtime-checked
@@ -130,7 +130,8 @@ checker) · **0.4 Bootstrap** — the interpreter rewritten in Burl itself
 
 ## Known limits (by design, ahead of 1.0)
 
-- Numbers are 64-bit floats; integers above 2^53 lose precision.
+- Integers compute exactly at any magnitude; a double value (or `/`)
+  makes the arithmetic 64-bit float, where 2^53+ loses precision.
 - String interpolation expressions cannot span lines.
 - `for-in` lists/strings/maps only; no ranges-as-filters yet.
 - No functions attached to maps (`m.method()`); free functions only.
