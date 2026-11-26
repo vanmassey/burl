@@ -676,16 +676,20 @@ fn c_binop(expr, sc, ch) {
     let line = expr["line"]
     if op == "and" {
         c_expr(expr["left"], sc, ch)
-        c_emit(ch, OP_JKF, c_here(ch) + 12, 0, line)
+        let jkf_pc = c_emit(ch, OP_JKF, 0, 0, line)
         c_emit(ch, OP_POPD, 0, 0, line)
         c_expr(expr["right"], sc, ch)
+        // join point is after the right operand, whatever its length —
+        // a fixed offset breaks for any operand longer than one word-4.
+        c_patch(ch, jkf_pc, c_here(ch))
         return nil
     }
     if op == "or" {
         c_expr(expr["left"], sc, ch)
-        c_emit(ch, OP_JKT, c_here(ch) + 12, 0, line)
+        let jkt_pc = c_emit(ch, OP_JKT, 0, 0, line)
         c_emit(ch, OP_POPD, 0, 0, line)
         c_expr(expr["right"], sc, ch)
+        c_patch(ch, jkt_pc, c_here(ch))
         return nil
     }
     c_expr(expr["left"], sc, ch)

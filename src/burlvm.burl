@@ -1,0 +1,78 @@
+// ============================================================================
+// burlvm.burl — The VM bootstrap driver.
+//
+//   python -m burl src/burlvm.burl < program.burl
+//
+// The same reflexive chain as burl.burl, with the bytecode VM standing in
+// for the tree-walker: deps["exec_ast"] is vm.burl's v_exec_ast (compile +
+// run on the VM), deps["call_fn"] is v_call_value, deps["interp_err"] is
+// v_err, and the boot env's globals come from v_make_globals — so vmfns
+// are first-class at every level and import()/apply() keep VM-aware
+// semantics. "use_vm" rides in the deps map, so every level of the chain
+// chooses the VM flavor again for the next.
+//
+// BOOT_DEPTH is 1, not 2: the VM already adds a compiled layer between the
+// program and the host, so a second boot would be one VM interpreting
+// another — measurable cost, no meaning gained. depth 1 = the program is
+// compiled and run by machinery the host's VM built directly.
+//
+// Paths note: import() resolves relative to this file; read() resolves
+// relative to the working directory (SPEC.md 9), so run from the repo root.
+// ============================================================================
+
+const BOOT_DEPTH = 1
+
+let lexmod = import("lex.burl")
+let parsemod = import("parse.burl")
+let interpmod = import("interp.burl")
+let vmmod = import("vm.burl")
+let kern = import("kernel.burl")
+
+let DEPS = {
+    "lex": lexmod.lex,
+    "parse": parsemod.parse,
+    "make_globals": vmmod.v_make_globals,
+    "exec_ast": vmmod.v_exec_ast,
+    "call_fn": vmmod.v_call_value,
+    "lex_err": lexmod.lex_err,
+    "parse_err": parsemod.parse_err,
+    "interp_err": vmmod.v_err,
+    "use_vm": true,
+}
+
+// The engine sources are also the DATA for the next level's boot.
+// kernel.burl rides along so every booted level has its own chain.
+let SOURCES = [
+    read("src/lex.burl"),
+    read("src/parse.burl"),
+    read("src/interp.burl"),
+    read("src/vm.burl"),
+    read("src/kernel.burl"),
+]
+
+// ---- read the program from stdin ------------------------------------------
+
+let lines = []
+while true {
+    let ln = input()
+    if ln == nil {
+        break
+    }
+    push(lines, ln)
+}
+let program = join(lines, "\n")
+
+// ---- run it through the chain ----------------------------------------------
+
+const KIND_NAMES = {"lex": "Lex", "parse": "Parse", "runtime": "Runtime"}
+
+let err = kern.k_chain(DEPS, SOURCES, program, BOOT_DEPTH)
+if err == nil {
+    // The chain machinery itself failed (v_call_value swallowed the error
+    // into the VM's error slot); report it rather than crash on nil.
+    let ve = vmmod.v_err()
+    print("burl: internal error: " + ve["msg"] + " (line " + str(ve["line"]) + ")")
+}
+if err != nil and err["kind"] != "" {
+    print("burl: " + KIND_NAMES[err["kind"]] + " error at line " + str(err["line"]) + ": " + err["msg"])
+}

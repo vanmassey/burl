@@ -1,0 +1,4 @@
+fn go(a) {
+    return "go:" + str(a)
+}
+print("smoke running " + go(7))

@@ -71,15 +71,9 @@ fn v_check_hint(v, hint, name, line) {
 }
 
 fn v_get(env, name, line) {
-    if ic_type(env) != "map" or ic_type(env["v"]) != "map" {
-        print("DBG VGET bad env name=" + name + " envtype=" + ic_type(env))
-    }
     let e = ic_env_find(env, name)
     if e == nil {
         return v_fail("runtime", "Undefined name '" + name + "'", line)
-    }
-    if ic_type(e) != "map" {
-        print("DBG v_get '" + name + "' etype=" + ic_type(e) + " envtype=" + ic_type(env))
     }
     return e["v"][name]["val"]
 }
@@ -197,9 +191,6 @@ fn v_run(frames, stack) {
         let op = code[pc]
         let sl = fr[1]
         let top = len(stack)
-        if op == CC.OP_BGTD {
-            print("DBG BGTD pc=" + str(pc) + " fn=" + proto["name"] + " depth=" + str(code[pc + 2]) + " slot=" + str(code[pc + 1]))
-        }
         if op == CC.OP_LGT {
             push(stack, sl[code[pc + 1]])
         } else if op == CC.OP_LST {
@@ -323,8 +314,9 @@ fn v_run(frames, stack) {
             let argc = code[pc + 1]
             let line = code[pc + 3]
             let fnv = stack[top - argc - 1]
-            // vmfn: map tagged "vmfn" (ic_type reports "fn" for both kinds);
-            // host builtins are fn values, not maps — has() would reject them.
+            // vmfn: map tagged "vmfn" (ic_type — the raw helper — reports
+            // "map" for it; the language `type` builtin below wraps that to
+            // "fn" for users, L-011). Host builtins are fn values, not maps.
             if ic_type(fnv) == "map" and fnv["tag"] == "vmfn" {
                 let ip = fnv["proto"]
                 if argc != ip["pp"] {
@@ -426,7 +418,7 @@ fn v_run(frames, stack) {
                 }
             } else {
                 if fr[5] == nil or fr[5]["v"] == nil {
-                    print("DBG GST bad env name=" + str(meta["n"]) + " fn=" + proto["name"] + " genvtype=" + ic_type(fr[5]))
+                    return v_fail("runtime", "Internal: bad global env for '" + meta["n"] + "'", line)
                 }
                 if has(fr[5]["v"], meta["n"]) {
                     return v_fail("runtime", "Name '" + meta["n"]
@@ -503,8 +495,10 @@ fn v_run(frames, stack) {
             }
             push(stack, r)
         } else if op == CC.OP_ISET {
-            let value = stack[top - 1]
-            let index = stack[top - 2]
+            // stack (bottom->top): obj, value, index — the tree-walker's
+            // evaluation order (container, value, index); index is on top.
+            let index = stack[top - 1]
+            let value = stack[top - 2]
             let obj = stack[top - 3]
             let t = ic_type(obj)
             let line = code[pc + 3]
@@ -563,7 +557,6 @@ fn v_run(frames, stack) {
             push(stack, out)
         } else if op == CC.OP_MAP {
             let n = code[pc + 1]
-            print("DBG MAP n=" + str(n) + " top=" + str(top) + " slen=" + str(len(stack)) + " name=" + proto["name"])
             let out = {}
             let base = top - 2 * n
             let j = 0
@@ -701,7 +694,7 @@ fn v_apply(f, args) {
         return v_fail("runtime", "apply(): argument 1 must be a fn, got "
             + ic_type(f), 0)
     }
-    if has(f, "tag") and f["tag"] == "vmfn" {
+    if ic_type(f) == "map" and f["tag"] == "vmfn" {
         return v_call_value(f, args, 0)
     }
     return ic_apply(f, args)
@@ -711,13 +704,25 @@ fn v_apply(f, args) {
 // A module env for the VM: the same builtins as the tree-walker's globals,
 // with machine-aware wrappers. "type" reports "fn" for VM fns too (LEDGER
 // L-011): ic_type handles both engine fn kinds.
+// A module env for the VM: the same builtins as the tree-walker's globals,
+// with machine-aware wrappers. "type" reports "fn" for VM fns too (LEDGER
+// L-011): the raw ic_type sees vmfn maps as maps, so the language builtin
+// wraps it — engine internals keep using ic_type directly.
+fn v_type_of(v) {
+    let t = ic_type(v)
+    if t == "map" and has(v, "tag") and v["tag"] == "vmfn" {
+        return "fn"
+    }
+    return t
+}
+
 fn v_make_globals() {
     // cells, exactly like i_make_globals: env "v" maps hold {val,const,hint}
     let g = ic_env_new(nil)
     g["v"]["print"] = {"val": print, "const": false, "hint": nil}
     g["v"]["input"] = {"val": input, "const": false, "hint": nil}
     g["v"]["len"] = {"val": len, "const": false, "hint": nil}
-    g["v"]["type"] = {"val": ic_type, "const": false, "hint": nil}
+    g["v"]["type"] = {"val": v_type_of, "const": false, "hint": nil}
     g["v"]["push"] = {"val": push, "const": false, "hint": nil}
     g["v"]["pop"] = {"val": pop, "const": false, "hint": nil}
     g["v"]["range"] = {"val": range, "const": false, "hint": nil}

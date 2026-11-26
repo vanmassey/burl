@@ -1,0 +1,31 @@
+// scratch: boot stages under the direct VM
+let vmmod = import("vm.burl")
+let lexmod = import("lex.burl")
+let parsemod = import("parse.burl")
+
+let paths = ["src/lex.burl", "src/parse.burl", "src/interp.burl", "src/vm.burl", "src/kernel.burl"]
+let genv = vmmod.v_make_globals()
+let env = {"v": {}, "p": genv}
+for pth in paths {
+    let prog = read(pth)
+    let toks = lexmod.lex(prog)
+    let le = lexmod.lex_err()
+    if le["kind"] != "" {
+        print(pth + ": LEX fail: " + le["msg"])
+        continue
+    }
+    let ast = parsemod.parse(toks, lexmod.lex)
+    let pe = parsemod.parse_err()
+    if pe["kind"] != "" {
+        print(pth + ": PARSE fail: " + pe["msg"])
+        continue
+    }
+    vmmod.v_exec_ast(ast, env)
+    let e = vmmod.v_err()
+    if e["kind"] != "" {
+        print(pth + ": EXEC fail: " + e["msg"] + " (line " + str(e["line"]) + ")")
+        continue
+    }
+    print(pth + ": ok")
+}
+print("boot done")
