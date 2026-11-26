@@ -1,0 +1,751 @@
+// ============================================================================
+// vm.burl — The bytecode VM. (ROADMAP v0.5 "Keel")
+//
+// Runs the protos produced by compile.burl. Speed without changing meaning:
+// same value world, same error messages, same lines — the tree-walker
+// (interp.burl) stays the definition of correct, and the differential
+// corpus (tests/test_vm.py) proves the two agree byte for byte.
+//
+//   frame  = [proto, slots, pc, callline, base, genv, vmfn]
+//            frame[6]'s "chain" finds enclosing cells; frame[5] is the
+//            module env the fn's globals live in.
+//   stack  = one shared value stack; each frame keeps its base for cleanup.
+//
+// Self-contained like every engine source (the checker verifies each file
+// alone): the PURE value helpers come from interp.burl via import aliases;
+// everything that can FAIL gets its own mirror here (v_get, v_assign,
+// v_check_hint, ...) writing the VM's own error slot V_E — an aliased
+// _I_E would go stale the moment interp_fail replaces the map.
+//
+// Monitoring parity contract: every runtime check the tree-walker performs,
+// the VM performs on the same instruction, with the same message and line.
+// Dispatch is an ordered if-chain on integer opcodes (compile.burl numbers
+// them by heat). Locals live in a flat slots list.
+// ============================================================================
+
+let IC = import("interp.burl")
+let ic_type = IC.i_type
+let ic_truthy = IC.i_truthy
+let ic_fmt = IC.i_fmt
+let ic_is_equal = IC.i_is_equal
+let ic_env_new = IC.i_env_new
+let ic_env_find = IC.i_env_find
+let ic_apply = IC.i_apply
+let CC = import("compile.burl")
+
+
+// ---- module state ------------------------------------------------------------
+
+let V_E = {"kind": "", "msg": "", "line": 0}
+
+fn v_err() {
+    return V_E
+}
+
+fn v_fail(kind, msg, line) {
+    V_E = {"kind": kind, "msg": msg, "line": line}
+    return nil
+}
+
+// ---- failure-capable mirrors of interp.burl's checks (V_E, same messages) -----
+
+fn v_satisfies(v, hint) {
+    if hint == "any" {
+        return true
+    }
+    if hint == "number" {
+        return ic_type(v) == "number"
+    }
+    return ic_type(v) == hint
+}
+
+fn v_check_hint(v, hint, name, line) {
+    if hint == nil or hint == "any" {
+        return nil
+    }
+    if not v_satisfies(v, hint) {
+        return v_fail("runtime", "'" + name + "' is declared as '" + hint
+            + "' but got " + ic_fmt(v, false) + " of type '" + ic_type(v) + "'", line)
+    }
+    return nil
+}
+
+fn v_get(env, name, line) {
+    if ic_type(env) != "map" or ic_type(env["v"]) != "map" {
+        print("DBG VGET bad env name=" + name + " envtype=" + ic_type(env))
+    }
+    let e = ic_env_find(env, name)
+    if e == nil {
+        return v_fail("runtime", "Undefined name '" + name + "'", line)
+    }
+    if ic_type(e) != "map" {
+        print("DBG v_get '" + name + "' etype=" + ic_type(e) + " envtype=" + ic_type(env))
+    }
+    return e["v"][name]["val"]
+}
+
+fn v_assign(env, name, value, line) {
+    let e = ic_env_find(env, name)
+    if e == nil {
+        return v_fail("runtime", "Undefined name '" + name + "'", line)
+    }
+    let cell = e["v"][name]
+    if cell["const"] {
+        return v_fail("runtime", "Cannot assign to const '" + name + "'", line)
+    }
+    v_check_hint(value, cell["hint"], name, line)
+    if V_E["kind"] != "" {
+        return nil
+    }
+    cell["val"] = value
+    return nil
+}
+
+fn v_check_int_index(n, index, line) {
+    if ic_type(index) != "number" or index != int(index) {
+        return v_fail("runtime", "Index must be a whole number, got " + ic_fmt(index, true), line)
+    }
+    let i = int(index)
+    if i < 0 or i >= n {
+        return v_fail("runtime", "Index " + str(i) + " out of range (length " + str(n) + ")", line)
+    }
+    return i
+}
+
+fn v_map_get(map_, key, line, via) {
+    if not has(map_, key) {
+        return v_fail("runtime", "Map has no key '" + key + "' (via " + via + ")", line)
+    }
+    return map_[key]
+}
+
+fn v_is_boxed(bx, slot) {
+    for b in bx {
+        if b == slot {
+            return true
+        }
+    }
+    return false
+}
+
+// ---- frames -------------------------------------------------------------------
+
+fn v_frame_new(proto, genv, vmfn) {
+    let ns = proto["ns"]
+    let sl = []
+    for i in range(ns) {
+        push(sl, false)
+    }
+    for j in proto["bx"] {
+        sl[j] = [false]
+    }
+    return [proto, sl, 0, 0, 0, genv, vmfn]
+}
+
+// ---- calls --------------------------------------------------------------------
+
+fn v_arity_fail(proto, argc, line) {
+    return v_fail("runtime", "Function '" + proto["name"] + "' expects "
+        + str(proto["pp"]) + " argument(s), got " + str(argc), line)
+}
+
+// Enter a vmfn from an already-built arg list (re-entrant path: apply()).
+fn v_call_value(fnv, args, line) {
+    let proto = fnv["proto"]
+    let argc = len(args)
+    if argc != proto["pp"] {
+        v_arity_fail(proto, argc, line)
+        return nil
+    }
+    let fr = v_frame_new(proto, fnv["genv"], fnv)
+    let sl = fr[1]
+    let ph = proto["ph"]
+    let st = []
+    let i = 0
+    while i < argc {
+        let v = args[i]
+        v_check_hint(v, ph[i], proto["pn"][i], line)
+        if V_E["kind"] != "" {
+            return nil
+        }
+        sl[i] = v
+        i = i + 1
+    }
+    // run to completion; RET leaves the result on the stack
+    v_run([fr], st)
+    if V_E["kind"] != "" {
+        return nil
+    }
+    if len(st) > 0 {
+        return st[len(st) - 1]
+    }
+    return nil
+}
+
+// ---- the loop -------------------------------------------------------------------
+// Constants: code[pc]=op, [pc+1]=a, [pc+2]=b, [pc+3]=line.
+// Frames: [proto, slots, pc, callline, base, genv, vmfn-only-if-vfn].
+
+fn v_run(frames, stack) {
+    while len(frames) > 0 {
+        let fi = len(frames) - 1
+        let fr = frames[fi]
+        let proto = fr[0]
+        let code = proto["code"]
+        let k = proto["k"]
+        let pc = fr[2]
+        let op = code[pc]
+        let sl = fr[1]
+        let top = len(stack)
+        if op == CC.OP_BGTD {
+            print("DBG BGTD pc=" + str(pc) + " fn=" + proto["name"] + " depth=" + str(code[pc + 2]) + " slot=" + str(code[pc + 1]))
+        }
+        if op == CC.OP_LGT {
+            push(stack, sl[code[pc + 1]])
+        } else if op == CC.OP_LST {
+            sl[code[pc + 1]] = stack[top - 1]
+            pop(stack)
+        } else if op == CC.OP_BGT {
+            // boxed local read: the slot holds a one-cell list
+            push(stack, sl[code[pc + 1]][0])
+        } else if op == CC.OP_BST {
+            sl[code[pc + 1]][0] = stack[top - 1]
+            pop(stack)
+        } else if op == CC.OP_JMP {
+            fr[2] = code[pc + 1]
+            continue
+        } else if op == CC.OP_ADD {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            let ta = ic_type(a)
+            let tb = ic_type(b)
+            if ta == "string" and tb == "string" {
+                stack[top - 2] = a + b
+                pop(stack)
+            } else if ta == "number" and tb == "number" {
+                stack[top - 2] = a + b
+                pop(stack)
+            } else {
+                return v_fail("runtime", "Operator '+' needs numbers, got "
+                    + ta + " and " + tb, code[pc + 3])
+            }
+        } else if op == CC.OP_SUB or op == CC.OP_MUL {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            let ta = ic_type(a)
+            let tb = ic_type(b)
+            if ta != "number" or tb != "number" {
+                let o = "+"
+                if op == CC.OP_SUB {
+                    o = "-"
+                } else {
+                    o = "*"
+                }
+                return v_fail("runtime", "Operator '" + o + "' needs numbers, got "
+                    + ta + " and " + tb, code[pc + 3])
+            }
+            if op == CC.OP_SUB {
+                stack[top - 2] = a - b
+            } else {
+                stack[top - 2] = a * b
+            }
+            pop(stack)
+        } else if op == CC.OP_LT or op == CC.OP_LE or op == CC.OP_GT or op == CC.OP_GE {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            let ta = ic_type(a)
+            let tb = ic_type(b)
+            let ok = (ta == "number" and tb == "number") or (ta == "string" and tb == "string")
+            if not ok {
+                let o = "<"
+                if op == CC.OP_LE {
+                    o = "<="
+                } else if op == CC.OP_GT {
+                    o = ">"
+                } else if op == CC.OP_GE {
+                    o = ">="
+                }
+                return v_fail("runtime", "Cannot compare " + ta + " and " + tb
+                    + " with '" + o + "'", code[pc + 3])
+            }
+            let r = false
+            if op == CC.OP_LT {
+                r = a < b
+            } else if op == CC.OP_LE {
+                r = a <= b
+            } else if op == CC.OP_GT {
+                r = a > b
+            } else {
+                r = a >= b
+            }
+            stack[top - 2] = r
+            pop(stack)
+        } else if op == CC.OP_EQ or op == CC.OP_NE {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            let r = ic_is_equal(a, b)
+            if op == CC.OP_NE {
+                r = not r
+            }
+            stack[top - 2] = r
+            pop(stack)
+        } else if op == CC.OP_DIV {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            if ic_type(a) != "number" or ic_type(b) != "number" {
+                let ta = ic_type(a)
+                let tb = ic_type(b)
+                return v_fail("runtime", "Operator '/' needs numbers, got "
+                    + ta + " and " + tb, code[pc + 3])
+            }
+            if b == 0 {
+                return v_fail("runtime", "Division by zero", code[pc + 3])
+            }
+            stack[top - 2] = a / b
+            pop(stack)
+        } else if op == CC.OP_MOD {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            if ic_type(a) != "number" or ic_type(b) != "number" {
+                let ta = ic_type(a)
+                let tb = ic_type(b)
+                return v_fail("runtime", "Operator '%' needs numbers, got "
+                    + ta + " and " + tb, code[pc + 3])
+            }
+            if b == 0 {
+                return v_fail("runtime", "Modulo by zero", code[pc + 3])
+            }
+            stack[top - 2] = a % b
+            pop(stack)
+        } else if op == CC.OP_KST {
+            push(stack, k[code[pc + 1]])
+        } else if op == CC.OP_CALL {
+            let argc = code[pc + 1]
+            let line = code[pc + 3]
+            let fnv = stack[top - argc - 1]
+            // vmfn: map tagged "vmfn" (ic_type reports "fn" for both kinds);
+            // host builtins are fn values, not maps — has() would reject them.
+            if ic_type(fnv) == "map" and fnv["tag"] == "vmfn" {
+                let ip = fnv["proto"]
+                if argc != ip["pp"] {
+                    v_arity_fail(ip, argc, line)
+                    return false
+                }
+                // base = the fn slot's position: RET pops args + fn, pushes result
+                let child = v_frame_new(ip, fnv["genv"], fnv)
+                child[4] = top - argc - 1
+                let csl = child[1]
+                let ph = ip["ph"]
+                let names = ip["pn"]
+                let j = 0
+                while j < argc {
+                    let av = stack[top - argc + j]
+                    v_check_hint(av, ph[j], names[j], line)
+                    if V_E["kind"] != "" {
+                        return false
+                    }
+                    if v_is_boxed(ip["bx"], j) {
+                        csl[j] = [av]
+                    } else {
+                        csl[j] = av
+                    }
+                    j = j + 1
+                }
+                // drop callee+args; child loads args into slots
+                let base = top - argc - 1
+                while len(stack) > base {
+                    pop(stack)
+                }
+                child[4] = base
+                child[3] = line
+                fr[2] = pc + 4
+                push(frames, child)
+                continue
+            }
+            if ic_type(fnv) != "fn" {
+                return v_fail("runtime", "Cannot call " + ic_type(fnv), line)
+            }
+            // host builtin: route through the engine's apply (which falls
+            // through to the host for builtins); a builtin-internal failure
+            // escapes as a host error (LEDGER L-010, same as the tree-walker)
+            let args = []
+            let j = 0
+            while j < argc {
+                push(args, stack[top - argc + j])
+                j = j + 1
+            }
+            let base = top - argc - 1
+            while len(stack) > base {
+                pop(stack)
+            }
+            // apply's own checks can't fail here (fn is "fn", args is a
+            // list); its builtin-internal BurlError escapes as a host error
+            // (L-010, same as the tree-walker). Result under the frame.
+            let r = ic_apply(fnv, args)
+            push(stack, r)
+            fr[2] = pc + 4
+            continue
+        } else if op == CC.OP_RET {
+            // empty stack at RET = the top-level terminator: nothing to return
+            let v = nil
+            if len(stack) > 0 {
+                v = stack[top - 1]
+                pop(stack)
+            }
+            let pr = proto["pr"]
+            if pr != nil {
+                v_check_hint(v, pr, "return of '" + proto["name"] + "'", fr[3])
+                if V_E["kind"] != "" {
+                    return false
+                }
+            }
+            let base = fr[4]
+            while len(stack) > base {
+                pop(stack)
+            }
+            push(stack, v)
+            pop(frames)
+            fr[2] = 0
+            continue
+        } else if op == CC.OP_GGT {
+            push(stack, v_get(fr[5], k[code[pc + 2]], code[pc + 3]))
+            if V_E["kind"] != "" {
+                return false
+            }
+        } else if op == CC.OP_GST {
+            // string meta = plain assignment (must exist); map meta =
+            // definition (Let/FnDecl): fails if taken, else checks the
+            // hint and stores with its const flag.
+            let meta = k[code[pc + 2]]
+            let val = stack[top - 1]
+            let line = code[pc + 3]
+            if ic_type(meta) == "string" {
+                v_assign(fr[5], meta, val, line)
+                if V_E["kind"] != "" {
+                    return false
+                }
+            } else {
+                if fr[5] == nil or fr[5]["v"] == nil {
+                    print("DBG GST bad env name=" + str(meta["n"]) + " fn=" + proto["name"] + " genvtype=" + ic_type(fr[5]))
+                }
+                if has(fr[5]["v"], meta["n"]) {
+                    return v_fail("runtime", "Name '" + meta["n"]
+                        + "' is already defined in this block", line)
+                }
+                v_check_hint(val, meta["h"], meta["n"], line)
+                if V_E["kind"] != "" {
+                    return false
+                }
+                fr[5]["v"][meta["n"]] = {"val": val, "const": meta["c"], "hint": meta["h"]}
+            }
+            pop(stack)
+        } else if op == CC.OP_ITERI {
+            let v = stack[top - 1]
+            pop(stack)
+            let t = ic_type(v)
+            if t != "list" and t != "string" and t != "map" {
+                return v_fail("runtime", "for-in needs a list, string or map, got "
+                    + t, code[pc + 3])
+            }
+            // hidden slots are consecutive: a=iterable, a+1=index, a+2=keys,
+            // a+3=length, a+4=kind (=the b operand)
+            let a = code[pc + 1]
+            if t == "map" {
+                let ks = keys(v)
+                sl[a] = ks
+                sl[a + 3] = len(ks)
+                sl[a + 4] = 2
+            } else {
+                sl[a] = v
+                sl[a + 3] = len(v)
+                sl[a + 4] = 0
+            }
+        } else if op == CC.OP_FRB {
+            sl[code[pc + 1]] = [nil]
+        } else if op == CC.OP_IDX {
+            let index = stack[top - 1]
+            let obj = stack[top - 2]
+            let t = ic_type(obj)
+            let line = code[pc + 3]
+            if t == "list" or t == "string" {
+                let i = v_check_int_index(len(obj), index, line)
+                if V_E["kind"] != "" {
+                    return false
+                }
+                stack[top - 2] = obj[i]
+                pop(stack)
+            } else if t == "map" {
+                if ic_type(index) != "string" {
+                    return v_fail("runtime", "Map keys must be strings, got "
+                        + ic_type(index), line)
+                }
+                let r = v_map_get(obj, index, line, "index")
+                if V_E["kind"] != "" {
+                    return false
+                }
+                stack[top - 2] = r
+                pop(stack)
+            } else {
+                return v_fail("runtime", "Cannot index " + t, line)
+            }
+        } else if op == CC.OP_MGET {
+            let obj = stack[top - 1]
+            pop(stack)
+            let name = k[code[pc + 2]]
+            let line = code[pc + 3]
+            if ic_type(obj) != "map" {
+                return v_fail("runtime", "." + name + " access needs a map, got "
+                    + ic_type(obj), line)
+            }
+            let r = v_map_get(obj, name, line, "." + name)
+            if V_E["kind"] != "" {
+                return false
+            }
+            push(stack, r)
+        } else if op == CC.OP_ISET {
+            let value = stack[top - 1]
+            let index = stack[top - 2]
+            let obj = stack[top - 3]
+            let t = ic_type(obj)
+            let line = code[pc + 3]
+            if t == "list" {
+                let i = v_check_int_index(len(obj), index, line)
+                if V_E["kind"] != "" {
+                    return false
+                }
+                obj[i] = value
+            } else if t == "map" {
+                if ic_type(index) != "string" {
+                    return v_fail("runtime", "Map keys must be strings, got "
+                        + ic_type(index), line)
+                }
+                obj[index] = value
+            } else {
+                return v_fail("runtime", "Cannot index-assign into " + t, line)
+            }
+            pop(stack)
+            pop(stack)
+            pop(stack)
+        } else if op == CC.OP_MSET {
+            let value = stack[top - 1]
+            let obj = stack[top - 2]
+            let name = k[code[pc + 2]]
+            let line = code[pc + 3]
+            if ic_type(obj) != "map" {
+                return v_fail("runtime", "." + name + " access needs a map, got "
+                    + ic_type(obj), line)
+            }
+            obj[name] = value
+            pop(stack)
+            pop(stack)
+        } else if op == CC.OP_CLOS {
+            let p = k[code[pc + 2]]
+            let chain = [sl]
+            if fr[6] != nil {
+                for c in fr[6]["chain"] {
+                    push(chain, c)
+                }
+            }
+            push(stack, {"tag": "vmfn", "name": p["name"], "proto": p,
+                         "chain": chain, "genv": fr[5]})
+        } else if op == CC.OP_LIST {
+            let n = code[pc + 1]
+            let out = []
+            let base = top - n
+            let j = 0
+            while j < n {
+                push(out, stack[base + j])
+                j = j + 1
+            }
+            while len(stack) > base {
+                pop(stack)
+            }
+            push(stack, out)
+        } else if op == CC.OP_MAP {
+            let n = code[pc + 1]
+            print("DBG MAP n=" + str(n) + " top=" + str(top) + " slen=" + str(len(stack)) + " name=" + proto["name"])
+            let out = {}
+            let base = top - 2 * n
+            let j = 0
+            while j < n {
+                out[stack[base + 2 * j]] = stack[base + 2 * j + 1]
+                j = j + 1
+            }
+            while len(stack) > base {
+                pop(stack)
+            }
+            push(stack, out)
+        } else if op == CC.OP_NEG {
+            let v = stack[top - 1]
+            if ic_type(v) != "number" {
+                return v_fail("runtime", "Unary '-' needs a number, got "
+                    + ic_type(v), code[pc + 3])
+            }
+            stack[top - 1] = 0 - v
+        } else if op == CC.OP_NOT {
+            let v = stack[top - 1]
+            stack[top - 1] = not ic_truthy(v)
+        } else if op == CC.OP_FMT {
+            stack[top - 1] = ic_fmt(stack[top - 1], false)
+        } else if op == CC.OP_CAT {
+            let b = stack[top - 1]
+            let a = stack[top - 2]
+            stack[top - 2] = a + b
+            pop(stack)
+        } else if op == CC.OP_HCK {
+            let v = stack[top - 1]
+            let info = k[code[pc + 2]]
+            v_check_hint(v, info["hint"], info["name"], code[pc + 3])
+            if V_E["kind"] != "" {
+                return false
+            }
+        } else if op == CC.OP_DUPF or op == CC.OP_CF {
+            return v_fail("runtime", k[code[pc + 2]]["msg"], code[pc + 3])
+        } else if op == CC.OP_LGT and false {
+            return false
+        } else if op == CC.OP_LGTD {
+            let c = fr[6]["chain"][code[pc + 2] - 1]
+            push(stack, c[code[pc + 1]])
+        } else if op == CC.OP_LSTD {
+            let c = fr[6]["chain"][code[pc + 2] - 1]
+            c[code[pc + 1]] = stack[top - 1]
+            pop(stack)
+        } else if op == CC.OP_BGTD {
+            let c = fr[6]["chain"][code[pc + 2] - 1]
+            push(stack, c[code[pc + 1]][0])
+        } else if op == CC.OP_BSTD {
+            let c = fr[6]["chain"][code[pc + 2] - 1]
+            c[code[pc + 1]][0] = stack[top - 1]
+            pop(stack)
+        } else if op == CC.OP_FGT {
+            let c = fr[6]["chain"][code[pc + 2] - 1]
+            let v = c[code[pc + 1]]
+            if v == false {
+                return v_fail("runtime", "Undefined name '"
+                    + proto["fnn"][str(code[pc + 1])] + "'", code[pc + 3])
+            }
+            push(stack, v)
+        } else if op == CC.OP_FST {
+            let v = stack[top - 1]
+            let c = fr[6]["chain"]
+            if code[pc + 2] == 0 {
+                sl[code[pc + 1]] = v
+            } else {
+                c[code[pc + 2] - 1][code[pc + 1]] = v
+            }
+            pop(stack)
+        } else if op == CC.OP_JFP {
+            let v = stack[top - 1]
+            pop(stack)
+            if not ic_truthy(v) {
+                fr[2] = code[pc + 1]
+                continue
+            }
+        } else if op == CC.OP_JKF {
+            if not ic_truthy(stack[top - 1]) {
+                fr[2] = code[pc + 1]
+                continue
+            }
+        } else if op == CC.OP_JKT {
+            if ic_truthy(stack[top - 1]) {
+                fr[2] = code[pc + 1]
+                continue
+            }
+        } else if op == CC.OP_NIL {
+            push(stack, nil)
+        } else if op == CC.OP_POPD {
+            pop(stack)
+        } else if op == CC.OP_BRKOUT or op == CC.OP_CTNOUT or op == CC.OP_RETOUT {
+            return v_fail("runtime", k[code[pc + 2]]["msg"], code[pc + 3])
+        } else {
+            return v_fail("runtime", "Unknown opcode " + str(op), code[pc + 3])
+        }
+        fr[2] = pc + 4
+        if V_E["kind"] != "" {
+            return false
+        }
+    }
+    return nil
+}
+
+
+// ---- the engine surface (kernel-facing, like interp.burl's) -------------------
+
+// Execute a compiled program chunk into a fresh module env. Kernel entry:
+// leaves an error in the shared slot on failure.
+fn v_exec(proto, genv) {
+    v_fail("", "", 0)
+    let fr = v_frame_new(proto, genv, nil)
+    v_run([fr], [])
+    return nil
+}
+
+// Kernel entry in the tree-walker's shape (deps["exec_ast"]): compile an
+// AST, exec it into genv. The compiler never fails (compile.burl: every
+// semantic check becomes a runtime instruction), so no error check between.
+fn v_exec_ast(ast, genv) {
+    let prog = CC.v_compile(ast)
+    v_exec(prog, genv)
+    return nil
+}
+
+// apply() for the VM's module envs: VM fns run in-machine; anything else
+// falls through to the engine's apply (host builtins included). Same
+// messages as ic_apply, including its line-0 limitation (LEDGER L-010).
+fn v_apply(f, args) {
+    if ic_type(args) != "list" {
+        return v_fail("runtime", "apply(): argument 2 must be a list, got "
+            + ic_type(args), 0)
+    }
+    if ic_type(f) != "fn" {
+        return v_fail("runtime", "apply(): argument 1 must be a fn, got "
+            + ic_type(f), 0)
+    }
+    if has(f, "tag") and f["tag"] == "vmfn" {
+        return v_call_value(f, args, 0)
+    }
+    return ic_apply(f, args)
+}
+
+
+// A module env for the VM: the same builtins as the tree-walker's globals,
+// with machine-aware wrappers. "type" reports "fn" for VM fns too (LEDGER
+// L-011): ic_type handles both engine fn kinds.
+fn v_make_globals() {
+    // cells, exactly like i_make_globals: env "v" maps hold {val,const,hint}
+    let g = ic_env_new(nil)
+    g["v"]["print"] = {"val": print, "const": false, "hint": nil}
+    g["v"]["input"] = {"val": input, "const": false, "hint": nil}
+    g["v"]["len"] = {"val": len, "const": false, "hint": nil}
+    g["v"]["type"] = {"val": ic_type, "const": false, "hint": nil}
+    g["v"]["push"] = {"val": push, "const": false, "hint": nil}
+    g["v"]["pop"] = {"val": pop, "const": false, "hint": nil}
+    g["v"]["range"] = {"val": range, "const": false, "hint": nil}
+    g["v"]["join"] = {"val": join, "const": false, "hint": nil}
+    g["v"]["keys"] = {"val": keys, "const": false, "hint": nil}
+    g["v"]["values"] = {"val": values, "const": false, "hint": nil}
+    g["v"]["has"] = {"val": has, "const": false, "hint": nil}
+    g["v"]["split"] = {"val": split, "const": false, "hint": nil}
+    g["v"]["upper"] = {"val": upper, "const": false, "hint": nil}
+    g["v"]["lower"] = {"val": lower, "const": false, "hint": nil}
+    g["v"]["slice"] = {"val": slice, "const": false, "hint": nil}
+    g["v"]["find"] = {"val": find, "const": false, "hint": nil}
+    g["v"]["contains"] = {"val": contains, "const": false, "hint": nil}
+    g["v"]["replace"] = {"val": replace, "const": false, "hint": nil}
+    g["v"]["trim"] = {"val": trim, "const": false, "hint": nil}
+    g["v"]["str"] = {"val": str, "const": false, "hint": nil}
+    g["v"]["num"] = {"val": num, "const": false, "hint": nil}
+    g["v"]["int"] = {"val": int, "const": false, "hint": nil}
+    g["v"]["abs"] = {"val": abs, "const": false, "hint": nil}
+    g["v"]["min"] = {"val": min, "const": false, "hint": nil}
+    g["v"]["max"] = {"val": max, "const": false, "hint": nil}
+    g["v"]["floor"] = {"val": floor, "const": false, "hint": nil}
+    g["v"]["round"] = {"val": round, "const": false, "hint": nil}
+    g["v"]["random"] = {"val": random, "const": false, "hint": nil}
+    g["v"]["read"] = {"val": read, "const": false, "hint": nil}
+    g["v"]["write"] = {"val": write, "const": false, "hint": nil}
+    g["v"]["clock"] = {"val": clock, "const": false, "hint": nil}
+    g["v"]["apply"] = {"val": v_apply, "const": false, "hint": nil}
+    g["v"]["import"] = {"val": import, "const": false, "hint": nil}
+    return g
+}

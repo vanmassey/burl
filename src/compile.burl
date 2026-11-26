@@ -1,0 +1,717 @@
+// ============================================================================
+// compile.burl — The compiler: tree -> bytecode. (ROADMAP v0.5 "Keel")
+//
+// Input: the AST maps produced by parse.burl. Output: a "proto":
+//
+//   proto = { "code": [op,a,b,line, op,a,b,line, ...],   flat, width 4
+//             "k":    [...],                             constants pool
+//             "ns":   n,                                 slot count
+//             "bx":   [slot, ...],                       boxed (captured) slots
+//             "fnn":  {slot: "name"},                    pre-registered fn slots
+//             "name": "...", "pp": nparams, "ph": [...], "pr": ret hint }
+//
+// A vmfn is { "tag":"vmfn", "name", "proto", "chain": [slots-list, ...] }
+// where chain[0] is the frame the fn was DEFINED in, chain[1] the frame above
+// it, ... — the lexical capture chain. Cell access at depth k reads
+// chain[k-1]. Mutations through captured boxes are shared the way the
+// tree-walker's env cells are (vm.burl holds the other half).
+//
+// The compiler never fails and never changes meaning: every semantic check
+// (duplicate definitions, const assignment, hints, undefined names, the
+// top-level control-flow rules) is emitted as an instruction that fails at
+// exactly the point — and line — the tree-walker's check would.
+//
+// Scope and capture. Every compile scope carries "fr": the frame it belongs
+// to (chunk 0, or a fn). A name resolves by walking the chain, counting one
+// cell-depth per frame transition: depth 0 = plain slot in the current
+// frame; depth k>0 = chain[k-1] of the closure at runtime. Globals (all
+// top-level bindings) resolve dynamically by name, matching the tree-
+// walker's env walk, so programs that read a global before its define
+// statement runs get the same error the tree-walker produces.
+//
+// Boxing. A local captured by an inner closure must be boxed (a 1-slot list)
+// so mutations are shared. Capture is known only when the inner fn compiles,
+// which can be AFTER uses of the variable were already emitted — so every
+// access records its instruction pc, and c_mark_boxed rewrites them (LGT ->
+// BGT etc.). Fresh boxes per iteration make SPEC 4's for-in promise work:
+// closures created in a loop body capture each value, not the last one.
+// ============================================================================
+
+// ---- opcodes (hot path first; see vm.burl for the dispatch) -----------------
+
+const OP_ADD = 1
+const OP_SUB = 2
+const OP_MUL = 3
+const OP_LT = 4
+const OP_LE = 5
+const OP_GT = 6
+const OP_GE = 7
+const OP_EQ = 8
+const OP_NE = 9
+const OP_LGT = 10        // a=slot              push local
+const OP_LST = 11        // a=slot              pop -> local
+const OP_BGT = 12        // a=slot              push boxed local (deref)
+const OP_BST = 13        // a=slot              pop -> boxed local
+const OP_JMP = 14        // a=target pc
+const OP_JFP = 15        // a=target pc         jump if falsy, pop
+const OP_JKF = 16        // a=target pc         jump if falsy, keep value (and)
+const OP_JKT = 17        // a=target pc         jump if truthy, keep value (or)
+const OP_KST = 18        // a=const idx         push constant
+const OP_CALL = 19       // a=argc              fn under args
+const OP_RET = 20
+const OP_GGT = 21        // b=const idx(name)   global read (dynamic lookup)
+const OP_GST = 22        // b=const idx(name)   global write (const/hint checked)
+const OP_ITERI = 23      // a=iterable slot, b=kind slot    for-in init
+const OP_FRB = 24        // a=slot              fresh box (loop var per iteration)
+const OP_IDX = 25        // pop index, obj      push obj[index]
+const OP_MSET = 26       // b=name const idx    pop value, obj; obj[name] = value
+const OP_MGET = 27       // b=name const idx    pop obj; push obj[name]
+const OP_ISET = 28       // pop value, index, obj
+const OP_CLOS = 29       // b=proto const idx   push vmfn
+const OP_LIST = 30       // a=count             pop values, push list
+const OP_MAP = 31        // a=pairs             pop pairs, push map
+const OP_NEG = 32
+const OP_NOT = 33
+const OP_FMT = 34        // pop v, push i_fmt(v, false)
+const OP_CAT = 35        // pop b, a; push a + b
+const OP_DIV = 36
+const OP_MOD = 37
+const OP_HCK = 38        // b=const idx {name,hint}   pop, check, push back
+const OP_DUPF = 39       // b=msg const idx     already-defined failure
+const OP_CF = 40         // b=msg const idx     const-assign failure
+const OP_NIL = 41
+// Depth>0 (captured) variants: a=slot, b=depth. Rarely emitted.
+const OP_LGTD = 44
+const OP_LSTD = 45
+const OP_BGTD = 46
+const OP_BSTD = 47
+const OP_FGT = 48        // a=slot, b=depth     pre-registered fn read
+const OP_FST = 49        // a=slot              pop -> pre-registered fn slot
+const OP_POPD = 50       // pop and discard (ExprStmt)
+// Outside-loop/outside-fn control flow: fail at their line, host-matched
+// ("... used outside of a ..." at the Program line, like the host does).
+const OP_BRKOUT = 51     // b=msg const idx
+const OP_CTNOUT = 52
+const OP_RETOUT = 53
+
+// ---- chunk + scope construction ---------------------------------------------
+
+fn c_chunk(name, pp, ph, pr) {
+    return {"code": [], "k": [], "ns": 0, "bx": [], "fnn": {}, "pn": [],
+            "name": name, "pp": pp, "ph": ph, "pr": pr,
+            "brk": nil, "ctn": nil, "top": false, "fr": 0}
+}
+
+fn c_scope(p) {
+    // "top" is stamped true only for the program scope; "fr" (owning frame)
+    // is stamped by the caller.
+    return {"e": {}, "fnb": false, "p": p, "fr": 0, "top": false}
+}
+
+fn c_alloc(ch) {
+    let slot = ch["ns"]
+    ch["ns"] = slot + 1
+    return slot
+}
+
+fn c_alloc_box(ch) {
+    let slot = c_alloc(ch)
+    push(ch["bx"], slot)
+    return slot
+}
+
+fn c_addconst(ch, v) {
+    push(ch["k"], v)
+    return len(ch["k"]) - 1
+}
+
+fn c_emit(ch, op, a, b, line) {
+    push(ch["code"], op)
+    push(ch["code"], a)
+    push(ch["code"], b)
+    push(ch["code"], line)
+    return len(ch["code"]) - 4
+}
+
+fn c_here(ch) {
+    return len(ch["code"])
+}
+
+fn c_patch(ch, pc, target) {
+    ch["code"][pc + 1] = target
+    return nil
+}
+
+fn c_msg(ch, text) {
+    return c_addconst(ch, {"msg": text})
+}
+
+// Record an emitted access so a later boxing can rewrite its opcode.
+fn c_use(entry, ch, op, pc) {
+    entry["ost"] = ch
+    push(entry["uses"], [op, pc])
+    return nil
+}
+
+fn c_new_entry(sc, ch, name, slot, cnst, hint) {
+    let e = {"k": "L", "s": slot, "bx": false, "uses": [],
+             "const": cnst, "hint": hint, "ost": ch}
+    sc["e"][name] = e
+    return e
+}
+
+fn c_mark_boxed(e) {
+    if e["bx"] {
+        return nil
+    }
+    e["bx"] = true
+    // the owning chunk must allocate the slot as a box (v_frame_new):
+    // without this the call handler stores a plain value and the BGTD
+    // deref reads it as a list
+    push(e["ost"]["bx"], e["s"])
+    for u in e["uses"] {
+        let pc = u[1]
+        if u[0] == OP_LGT {
+            e["ost"]["code"][pc] = OP_BGT
+        } else if u[0] == OP_LST {
+            e["ost"]["code"][pc] = OP_BST
+        } else if u[0] == OP_LGTD {
+            e["ost"]["code"][pc] = OP_BGTD
+        } else {
+            e["ost"]["code"][pc] = OP_BSTD
+        }
+    }
+    return nil
+}
+
+// Resolve a name. Returns [kind, depth, entry]: kind "L" (slot in this
+// frame), "C" (captured, depth k>0), "F" (pre-registered fn slot), or "G"
+// (dynamic global).
+fn c_resolve(sc, name) {
+    // depth = frame boundaries crossed walking out; 0 = same frame (a local)
+    let depth = 0
+    let prev_fr = sc["fr"]
+    let s = sc
+    while s != nil {
+        if s["fr"] != prev_fr {
+            depth = depth + 1
+            prev_fr = s["fr"]
+        }
+        if has(s["e"], name) {
+            let e = s["e"][name]
+            if e["k"] == "F" {
+                return ["F", depth, e]
+            }
+            if depth == 0 {
+                return ["L", 0, e]
+            }
+            return ["C", depth, e]
+        }
+        s = s["p"]
+    }
+    return ["G", 0, nil]
+}
+
+// ---- entry point --------------------------------------------------------------
+
+fn v_compile(ast) {
+    // chunk 0: the program. Top-level bindings are globals; the chunk keeps
+    // slots only for for-in loop vars (fresh per iteration) and hidden state.
+    let ch = c_chunk("<program>", 0, [], nil)
+    let sc = c_scope(nil)
+    sc["top"] = true
+    ch["top"] = true
+    ch["fr"] = 0
+    sc["fr"] = 0
+    ch["pline"] = ast["line"]
+    c_stmts(ast["stmts"], sc, ch)
+    // implicit terminator: v_run must never read past the chunk
+    c_emit(ch, OP_RET, 0, 0, 0)
+    return ch
+}
+
+// ---- statements ---------------------------------------------------------------
+
+fn c_stmts(stmts, sc, ch) {
+    // Pre-register this block's local fn declarations so sibling functions
+    // resolve each other. A reference before the decl statement RUNS fails
+    // via the FGT sentinel check, exactly where the tree-walker's "Undefined
+    // name" fires (its env only has the binding after the stmt executes).
+    if not sc["top"] {
+        for st in stmts {
+            if st["tag"] == "FnDecl" and not has(sc["e"], st["name"]) {
+                let slot = c_alloc(ch)
+                ch["fnn"][str(slot)] = st["name"]
+                sc["e"][st["name"]] = {"k": "F", "s": slot, "bx": false,
+                                       "uses": [], "const": false,
+                                       "hint": nil, "ost": ch,
+                                       "slotdone": false}
+            }
+        }
+    }
+    for st in stmts {
+        c_stmt(st, sc, ch)
+    }
+    return nil
+}
+
+fn c_stmt(st, sc, ch) {
+    let tag = st["tag"]
+    let line = st["line"]
+    if tag == "Let" {
+        c_let(st, sc, ch)
+        return nil
+    }
+    if tag == "FnDecl" {
+        c_fndecl(st, sc, ch)
+        return nil
+    }
+    if tag == "If" {
+        c_expr(st["cond"], sc, ch)
+        let jump_end_then = c_emit(ch, OP_JFP, 0, 0, line)
+        c_stmts(st["then"], c_child(sc), ch)
+        let jump_over_else = c_emit(ch, OP_JMP, 0, 0, line)
+        c_patch(ch, jump_end_then, c_here(ch))
+        if st["els"] != nil {
+            c_stmts(st["els"], c_child(sc), ch)
+        }
+        c_patch(ch, jump_over_else, c_here(ch))
+        return nil
+    }
+    if tag == "While" {
+        let cond_pc = c_here(ch)
+        c_expr(st["cond"], sc, ch)
+        let jump_end = c_emit(ch, OP_JFP, 0, 0, line)
+        let saved_brk = ch["brk"]
+        let saved_ctn = ch["ctn"]
+        ch["brk"] = []
+        ch["ctn"] = []
+        c_stmts(st["body"], c_child(sc), ch)
+        c_emit(ch, OP_JMP, cond_pc, 0, line)
+        let after = c_here(ch)
+        c_patch(ch, jump_end, after)
+        for pc in ch["brk"] {
+            c_patch(ch, pc, after)
+        }
+        for pc in ch["ctn"] {
+            c_patch(ch, pc, cond_pc)
+        }
+        ch["brk"] = saved_brk
+        ch["ctn"] = saved_ctn
+        return nil
+    }
+    if tag == "For" {
+        c_for(st, sc, ch)
+        return nil
+    }
+    if tag == "Return" {
+        if st["expr"] != nil {
+            c_expr(st["expr"], sc, ch)
+        } else {
+            c_emit(ch, OP_NIL, 0, 0, line)
+        }
+        if ch["top"] {
+            c_emit(ch, OP_RETOUT, 0,
+                   c_msg(ch, "'return' used outside of a function"), ch["pline"])
+            return nil
+        }
+        c_emit(ch, OP_RET, 0, 0, line)
+        return nil
+    }
+    if tag == "Break" {
+        if ch["brk"] == nil {
+            c_emit(ch, OP_BRKOUT, 0, c_msg(ch, "'break' used outside of a loop"),
+                   ch["pline"])
+            return nil
+        }
+        push(ch["brk"], c_emit(ch, OP_JMP, 0, 0, line))
+        return nil
+    }
+    if tag == "Continue" {
+        if ch["ctn"] == nil {
+            c_emit(ch, OP_CTNOUT, 0, c_msg(ch, "'continue' used outside of a loop"),
+                   ch["pline"])
+            return nil
+        }
+        push(ch["ctn"], c_emit(ch, OP_JMP, 0, 0, line))
+        return nil
+    }
+    if tag == "ExprStmt" {
+        c_expr(st["expr"], sc, ch)
+        c_emit(ch, OP_POPD, 0, 0, line)
+        return nil
+    }
+    if tag == "Assign" {
+        c_assign(st, sc, ch)
+        return nil
+    }
+    return nil
+}
+
+fn c_child(sc) {
+    let s = c_scope(sc)
+    s["fr"] = sc["fr"]
+    return s
+}
+
+fn c_let(st, sc, ch) {
+    let line = st["line"]
+    if sc["top"] {
+        // Top-level: dynamic global, exactly like the tree-walker's env.
+        // (Reading it before this stmt runs errors at runtime, same msg.)
+        c_expr(st["expr"], sc, ch)
+        // map meta (vs a bare name for plain assignment): GST defines
+        // when the name is new, with this let's const flag and hint.
+        c_emit(ch, OP_GST, 0, c_addconst(ch, {"n": st["name"], "c": st["const"], "h": st["hint"]}), line)
+        return nil
+    }
+    if has(sc["e"], st["name"]) {
+        c_emit(ch, OP_DUPF, 0, c_msg(ch, "Name '" + st["name"]
+            + "' is already defined in this block"), line)
+        return nil
+    }
+    c_expr(st["expr"], sc, ch)
+    let e = c_new_entry(sc, ch, st["name"], c_alloc(ch), st["const"], st["hint"])
+    if st["hint"] != nil {
+        c_emit(ch, OP_HCK, 0, c_addconst(ch, {"name": st["name"], "hint": st["hint"]}), line)
+    }
+    let pc = c_emit(ch, OP_LST, e["s"], 0, line)
+    c_use(e, ch, OP_LST, pc)
+    return nil
+}
+
+fn c_fndecl(st, sc, ch) {
+    let line = st["line"]
+    let r = c_resolve(sc, st["name"])
+    if (r[0] == "F" and r[2]["slotdone"] == true) or r[0] == "L" {
+        // second definition of the same name in this block; or a let/fn
+        // already occupies the name — fails when reached, like i_define
+        c_emit(ch, OP_DUPF, 0, c_msg(ch, "Name '" + st["name"]
+            + "' is already defined in this block"), line)
+        return nil
+    }
+    let proto = c_fn_proto(st["name"], st["params"], st["ret"], st["body"], sc, ch["pline"])
+    let ci = c_addconst(ch, proto)
+    c_emit(ch, OP_CLOS, 0, ci, line)
+    if r[0] == "F" {
+        c_emit(ch, OP_FST, r[2]["s"], 0, line)
+        r[2]["slotdone"] = true
+    } else {
+        c_emit(ch, OP_GST, 0, c_addconst(ch, {"n": st["name"], "c": false, "h": nil}), line)
+    }
+    return nil
+}
+
+// Compile one function (declared or anonymous). Returns the proto.
+fn c_fn_proto(name, params, ret, body, outer_sc, pline) {
+    let ch = c_chunk(name, len(params), [], ret)
+    ch["pline"] = pline
+    let sc = c_scope(outer_sc)
+    sc["fnb"] = true
+    ch["fr"] = outer_sc["fr"] + 1
+    sc["fr"] = ch["fr"]
+    let ph = []
+    for pv in params {
+        push(ph, pv[1])
+        push(ch["pn"], pv[0])
+        c_new_entry(sc, ch, pv[0], c_alloc(ch), false, pv[1])
+    }
+    ch["ph"] = ph
+    c_stmts(body["stmts"], c_child(sc), ch)
+    // implicit result for a fall-through return
+    c_emit(ch, OP_NIL, 0, 0, 0)
+    c_emit(ch, OP_RET, 0, 0, 0)
+    return ch
+}
+
+fn c_for(st, sc, ch) {
+    let line = st["line"]
+    // hidden slots: iterable, index, keys (map), length, kind
+    let ival = c_alloc(ch)
+    let iidx = c_alloc(ch)
+    let ikeys = c_alloc(ch)
+    let ilen = c_alloc(ch)
+    let ikind = c_alloc(ch)
+    // loop-var scope: its own scope, so the name vanishes after the loop
+    let var_sc = c_child(sc)
+    c_expr(st["iterable"], sc, ch)
+    c_emit(ch, OP_ITERI, ival, ikind, st["line"])
+    c_emit(ch, OP_KST, c_addconst(ch, 0), 0, line)
+    c_emit(ch, OP_LST, iidx, 0, line)
+    let var_slot = c_alloc_box(ch)
+    let var_e = c_new_entry(var_sc, ch, st["var"], var_slot, false, nil)
+    var_e["bx"] = true
+    let cond_pc = c_here(ch)
+    c_emit(ch, OP_LGT, iidx, 0, line)
+    c_emit(ch, OP_LGT, ilen, 0, line)
+    c_emit(ch, OP_LT, 0, 0, line)
+    let jump_end = c_emit(ch, OP_JFP, 0, 0, line)
+    let saved_brk = ch["brk"]
+    let saved_ctn = ch["ctn"]
+    ch["brk"] = []
+    ch["ctn"] = []
+    c_emit(ch, OP_FRB, var_slot, 0, line)
+    // element = kind==2 ? keys[idx] : it[idx]
+    c_emit(ch, OP_LGT, ikind, 0, line)
+    c_emit(ch, OP_KST, c_addconst(ch, 2), 0, line)
+    c_emit(ch, OP_EQ, 0, 0, line)
+    let jump_not_map = c_emit(ch, OP_JFP, 0, 0, line)
+    c_emit(ch, OP_LGT, ikeys, 0, line)
+    c_emit(ch, OP_LGT, iidx, 0, line)
+    c_emit(ch, OP_IDX, 0, 0, line)
+    c_emit(ch, OP_JMP, c_here(ch) + 16, 0, line)   // over the list path
+    c_patch(ch, jump_not_map, c_here(ch))
+    c_emit(ch, OP_LGT, ival, 0, line)
+    c_emit(ch, OP_LGT, iidx, 0, line)
+    c_emit(ch, OP_IDX, 0, 0, line)
+    // store into the fresh box
+    let store_pc = c_here(ch)
+    c_emit(ch, OP_BST, var_slot, 0, line)
+    c_use(var_e, ch, OP_BST, store_pc)
+    c_stmts(st["body"], c_child(var_sc), ch)
+    // increment (the continue target)
+    let ctn_pc = c_here(ch)
+    c_emit(ch, OP_LGT, iidx, 0, line)
+    c_emit(ch, OP_KST, c_addconst(ch, 1), 0, line)
+    c_emit(ch, OP_ADD, 0, 0, line)
+    c_emit(ch, OP_LST, iidx, 0, line)
+    c_emit(ch, OP_JMP, cond_pc, 0, line)
+    let after = c_here(ch)
+    c_patch(ch, jump_end, after)
+    for pc in ch["brk"] {
+        c_patch(ch, pc, after)
+    }
+    for pc in ch["ctn"] {
+        c_patch(ch, pc, ctn_pc)
+    }
+    ch["brk"] = saved_brk
+    ch["ctn"] = saved_ctn
+    return nil
+}
+
+fn c_assign(st, sc, ch) {
+    let line = st["line"]
+    let target = st["target"]
+    if target["tag"] == "Var" {
+        let r = c_resolve(sc, target["name"])
+        let kind = r[0]
+        if kind == "F" {
+            c_expr(st["value"], sc, ch)
+            c_emit(ch, OP_FST, r[2]["s"], 0, line)
+            return nil
+        }
+        if kind == "G" {
+            c_expr(st["value"], sc, ch)
+            c_emit(ch, OP_GST, 0, c_addconst(ch, target["name"]), line)
+            return nil
+        }
+        let e = r[2]
+        if e["const"] {
+            c_emit(ch, OP_CF, 0, c_msg(ch, "Cannot assign to const '"
+                + target["name"] + "'"), line)
+            return nil
+        }
+        c_expr(st["value"], sc, ch)
+        if kind == "L" {
+            if e["hint"] != nil {
+                c_emit(ch, OP_HCK, 0,
+                       c_addconst(ch, {"name": target["name"], "hint": e["hint"]}), line)
+            }
+            let op = OP_LST
+            if e["bx"] {
+                op = OP_BST
+            }
+            let pc = c_emit(ch, op, e["s"], 0, line)
+            c_use(e, ch, op, pc)
+        } else {
+            // captured: flag the owner's entry boxed (it may already be)
+            if kind == "C" {
+                c_mark_boxed(e)
+            }
+            if e["hint"] != nil {
+                c_emit(ch, OP_HCK, 0,
+                       c_addconst(ch, {"name": target["name"], "hint": e["hint"]}), line)
+            }
+            let op = OP_LSTD
+            if e["bx"] {
+                op = OP_BSTD
+            }
+            c_emit(ch, op, e["s"], r[1], line)
+        }
+        return nil
+    }
+    // Index / Member targets: container, then value, then the key — the
+    // tree-walker's exact evaluation order (i_exec_assign).
+    c_expr(target["obj"], sc, ch)
+    c_expr(st["value"], sc, ch)
+    if target["tag"] == "Index" {
+        c_expr(target["index"], sc, ch)
+        c_emit(ch, OP_ISET, 0, 0, line)
+        return nil
+    }
+    c_emit(ch, OP_MSET, 0, c_addconst(ch, target["name"]), line)
+    return nil
+}
+
+// ---- expressions ----------------------------------------------------------------
+
+fn c_expr(expr, sc, ch) {
+    let tag = expr["tag"]
+    let line = expr["line"]
+    if tag == "Num" or tag == "Bool" {
+        c_emit(ch, OP_KST, c_addconst(ch, expr["value"]), 0, line)
+        return nil
+    }
+    if tag == "Nil" {
+        c_emit(ch, OP_NIL, 0, 0, line)
+        return nil
+    }
+    if tag == "Var" {
+        let r = c_resolve(sc, expr["name"])
+        let kind = r[0]
+        if kind == "G" {
+            c_emit(ch, OP_GGT, 0, c_addconst(ch, expr["name"]), line)
+            return nil
+        }
+        let e = r[2]
+        if kind == "F" {
+            // pre-registered fn slot: false sentinel until its decl runs
+            c_emit(ch, OP_FGT, e["s"], r[1], line)
+            return nil
+        }
+        let op = OP_LGT
+        if e["bx"] {
+            op = OP_BGT
+        }
+        if kind == "C" {
+            c_mark_boxed(e)
+            op = OP_BGTD
+        }
+        let pc = c_emit(ch, op, e["s"], r[1], line)
+        c_use(e, ch, op, pc)
+        return nil
+    }
+    if tag == "Str" {
+        // An empty string lexes to zero parts; it still must push one "".
+        if len(expr["parts"]) == 0 {
+            c_emit(ch, OP_KST, c_addconst(ch, ""), 0, line)
+            return nil
+        }
+        for p in expr["parts"] {
+            if p["k"] == "lit" {
+                c_emit(ch, OP_KST, c_addconst(ch, p["t"]), 0, line)
+            } else {
+                c_expr(p["e"], sc, ch)
+                c_emit(ch, OP_FMT, 0, 0, line)
+            }
+        }
+        let n = len(expr["parts"])
+        while n > 1 {
+            c_emit(ch, OP_CAT, 0, 0, line)
+            n = n - 1
+        }
+        return nil
+    }
+    if tag == "ListLit" {
+        for item in expr["items"] {
+            c_expr(item, sc, ch)
+        }
+        c_emit(ch, OP_LIST, len(expr["items"]), 0, line)
+        return nil
+    }
+    if tag == "MapLit" {
+        for kv in expr["items"] {
+            c_emit(ch, OP_KST, c_addconst(ch, kv[0]), 0, line)
+            c_expr(kv[1], sc, ch)
+        }
+        c_emit(ch, OP_MAP, len(expr["items"]), 0, line)
+        return nil
+    }
+    if tag == "Binop" {
+        return c_binop(expr, sc, ch)
+    }
+    if tag == "Not" {
+        c_expr(expr["expr"], sc, ch)
+        c_emit(ch, OP_NOT, 0, 0, line)
+        return nil
+    }
+    if tag == "Neg" {
+        c_expr(expr["expr"], sc, ch)
+        c_emit(ch, OP_NEG, 0, 0, line)
+        return nil
+    }
+    if tag == "Call" {
+        c_expr(expr["fn"], sc, ch)
+        for a in expr["args"] {
+            c_expr(a, sc, ch)
+        }
+        c_emit(ch, OP_CALL, len(expr["args"]), 0, line)
+        return nil
+    }
+    if tag == "Index" {
+        c_expr(expr["obj"], sc, ch)
+        c_expr(expr["index"], sc, ch)
+        c_emit(ch, OP_IDX, 0, 0, line)
+        return nil
+    }
+    if tag == "Member" {
+        c_expr(expr["obj"], sc, ch)
+        c_emit(ch, OP_MGET, 0, c_addconst(ch, expr["name"]), line)
+        return nil
+    }
+    if tag == "FnExpr" {
+        let proto = c_fn_proto("<anonymous>", expr["params"], expr["ret"],
+                               expr["body"], sc, ch["pline"])
+        let ci = c_addconst(ch, proto)
+        c_emit(ch, OP_CLOS, 0, ci, line)
+        return nil
+    }
+    return nil
+}
+
+// and/or are jumps: left short-circuits with its own value, exactly as
+// i_eval_binop does. Everything else: left, right, then one op.
+fn c_binop(expr, sc, ch) {
+    let op = expr["op"]
+    let line = expr["line"]
+    if op == "and" {
+        c_expr(expr["left"], sc, ch)
+        c_emit(ch, OP_JKF, c_here(ch) + 12, 0, line)
+        c_emit(ch, OP_POPD, 0, 0, line)
+        c_expr(expr["right"], sc, ch)
+        return nil
+    }
+    if op == "or" {
+        c_expr(expr["left"], sc, ch)
+        c_emit(ch, OP_JKT, c_here(ch) + 12, 0, line)
+        c_emit(ch, OP_POPD, 0, 0, line)
+        c_expr(expr["right"], sc, ch)
+        return nil
+    }
+    c_expr(expr["left"], sc, ch)
+    c_expr(expr["right"], sc, ch)
+    if op == "+" {
+        c_emit(ch, OP_ADD, 0, 0, line)
+    } else if op == "-" {
+        c_emit(ch, OP_SUB, 0, 0, line)
+    } else if op == "*" {
+        c_emit(ch, OP_MUL, 0, 0, line)
+    } else if op == "/" {
+        c_emit(ch, OP_DIV, 0, 0, line)
+    } else if op == "%" {
+        c_emit(ch, OP_MOD, 0, 0, line)
+    } else if op == "==" {
+        c_emit(ch, OP_EQ, 0, 0, line)
+    } else if op == "!=" {
+        c_emit(ch, OP_NE, 0, 0, line)
+    } else if op == "<" {
+        c_emit(ch, OP_LT, 0, 0, line)
+    } else if op == "<=" {
+        c_emit(ch, OP_LE, 0, 0, line)
+    } else if op == ">" {
+        c_emit(ch, OP_GT, 0, 0, line)
+    } else {
+        c_emit(ch, OP_GE, 0, 0, line)
+    }
+    return nil
+}

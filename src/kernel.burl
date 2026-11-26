@@ -32,8 +32,26 @@ fn k_env_get(env, name) {
     return env["v"][name]["val"]
 }
 
-// Build a deps map from a bootstrapped environment.
-fn k_deps_of(env) {
+// Build a deps map from a bootstrapped environment. The flavor follows the
+// incoming deps: when deps["use_vm"] is true, exec/err/call/globals come from
+// the VM machinery bootstrapped into env (vm.burl must be in the sources);
+// otherwise from the tree-walker (interp.burl). The flag rides along so the
+// choice propagates down the chain.
+fn k_deps_of(env, deps) {
+    let use_vm = has(deps, "use_vm") and deps["use_vm"]
+    if use_vm {
+        return {
+            "lex": k_env_get(env, "lex"),
+            "parse": k_env_get(env, "parse"),
+            "make_globals": k_env_get(env, "v_make_globals"),
+            "exec_ast": k_env_get(env, "v_exec_ast"),
+            "call_fn": k_env_get(env, "v_call_value"),
+            "lex_err": k_env_get(env, "lex_err"),
+            "parse_err": k_env_get(env, "parse_err"),
+            "interp_err": k_env_get(env, "v_err"),
+            "use_vm": true,
+        }
+    }
     return {
         "lex": k_env_get(env, "lex"),
         "parse": k_env_get(env, "parse"),
@@ -115,7 +133,7 @@ fn k_chain(deps, sources, program, depth) {
     if not r[0] {
         return r[1]
     }
-    let fresh = k_deps_of(r[1])
+    let fresh = k_deps_of(r[1], deps)
     let next_chain = k_env_get(r[1], "k_chain")
     return deps["call_fn"](next_chain, [fresh, sources, program, depth - 1], 0)
 }
